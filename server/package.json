@@ -1,0 +1,13 @@
+{
+  "name": "robnite-server",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Optional authoritative multiplayer server skeleton for Robnite (not required to play).",
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
