@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SafeStorage } from '../src/save/storage';
 import { SaveManager } from '../src/save/SaveManager';
-import { SAVE_KEY, defaultSave } from '../src/save/schema';
+import { SAVE_KEY, SAVE_VERSION, defaultSave } from '../src/save/schema';
 import { Progression, validateDisplayName, xpForLevel } from '../src/progression/Progression';
 import { LocalShopService, shopRotation } from '../src/cosmetics/shop';
 import { BP_XP_PER_TIER } from '../src/season/season';
@@ -69,7 +69,17 @@ describe('save system', () => {
     storage.setItem(SAVE_KEY, JSON.stringify({ displayName: 'OldTimer' }));
     const s = new SaveManager(new SafeStorage(storage));
     expect(s.data.profile.displayName).toBe('OldTimer');
-    expect(s.data.version).toBe(1);
+    expect(s.data.version).toBe(SAVE_VERSION);
+  });
+
+  it('v1 → v2 drops the old camera framing so the new defaults apply', () => {
+    const storage = new MemStorage();
+    const old = defaultSave() as unknown as { version: number; settings: { gameplay: Record<string, unknown> } };
+    old.version = 1;
+    old.settings.gameplay.cameraDistance = 3.2;
+    storage.setItem(SAVE_KEY, JSON.stringify(old));
+    const s = new SaveManager(new SafeStorage(storage));
+    expect(s.data.settings.gameplay.cameraDistance).toBe(defaultSave().settings.gameplay.cameraDistance);
   });
 
   it('repairs equipped items that are not owned', () => {

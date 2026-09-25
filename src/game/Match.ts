@@ -247,16 +247,21 @@ export class Match implements CombatHost {
         if (mask !== undefined) this.builds.applyEdit(p.id, null, mask);
       }
     };
-    // Edit practice: a row of walls at the edit station (-40, 24) → cells x -12..-9, z 6.
+    // Edit practice: a row of walls just north of the edit station sign (-40, 24).
+    const cell = (v: number) => Math.floor(v / TILE);
+    const ex = cell(-40) - 2;
+    const ez = cell(24) + 1;
     const presets = [WALL_PRESETS.full, WALL_PRESETS.window, WALL_PRESETS.door, WALL_PRESETS.full];
-    presets.forEach((mask, i) => place('wall', -12 + i, 0, 7, 1, mask));
-    // Box fight practice at (40, 24) → cell (10, 6)
-    place('floor', 10, 0, 6, 0);
-    place('wall', 10, 0, 6, 1);
-    place('wall', 10, 0, 7, 1);
-    place('wall', 10, 0, 6, 0);
-    place('wall', 11, 0, 6, 0);
-    place('cone', 10, 1, 6, 0);
+    presets.forEach((mask, i) => place('wall', ex + i, 0, ez, 1, mask));
+    // Box fight practice box at the station (40, 24).
+    const bx = cell(40);
+    const bz = cell(24);
+    place('floor', bx, 0, bz, 0);
+    place('wall', bx, 0, bz, 1);
+    place('wall', bx, 0, bz + 1, 1);
+    place('wall', bx, 0, bz, 0);
+    place('wall', bx + 1, 0, bz, 0);
+    place('cone', bx, 1, bz, 0);
   }
 
   private addTarget(kind: PracticeTarget['kind'], pos: Vector3): void {

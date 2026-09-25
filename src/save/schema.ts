@@ -5,7 +5,7 @@ import { freshQuestState, type QuestState } from '../quests/quests';
 import type { MatchResult, ModeId } from '../game/matchTypes';
 import { dayIndex, weekIndex } from '../core/rng';
 
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 export const SAVE_KEY = 'robnite.save';
 
 export interface PlayerStats {
@@ -157,6 +157,17 @@ export const MIGRATIONS: ((data: Plain) => Plain)[] = [
       delete d.displayName;
     }
     d.version = 1;
+    return d;
+  },
+  // v1 → v2: FOV became horizontal (Fortnite-style) and the camera was
+  // re-framed; drop the old camera distance / shoulder so the new defaults apply.
+  (d) => {
+    const gp = isPlain(d.settings) && isPlain(d.settings.gameplay) ? d.settings.gameplay : null;
+    if (gp) {
+      delete gp.cameraDistance;
+      delete gp.shoulderOffset;
+    }
+    d.version = 2;
     return d;
   },
 ];

@@ -8,7 +8,7 @@ import {
   GLIDE_HORIZONTAL,
   GRAVITY,
   GROUND_ACCEL,
-  GROUND_FRICTION,
+  GROUND_BRAKE,
   JUMP_SPEED,
   PLAYER_CROUCH_HEIGHT,
   PLAYER_HEIGHT,
@@ -108,12 +108,16 @@ export function stepMovement(c: Combatant, world: CollisionWorld, dt: number, wa
     c.vel.x = c.vel.x * damp + wish.x * 2 * dt;
     c.vel.z = c.vel.z * damp + wish.z * 2 * dt;
   } else if (c.grounded) {
+    // Fortnite-like ground control: quick but not instant acceleration and
+    // braking, so movement has weight without feeling floaty.
     const tx = wish.x * speed;
     const tz = wish.z * speed;
     const dx = tx - c.vel.x;
     const dz = tz - c.vel.z;
     const dl = Math.hypot(dx, dz);
-    const accel = (wish.lengthSq() > 0.001 ? GROUND_ACCEL : GROUND_FRICTION * Math.max(speed, Math.hypot(c.vel.x, c.vel.z))) * dt;
+    const moving = wish.lengthSq() > 0.001;
+    // Changing direction brakes the old velocity at the braking rate too.
+    const accel = (moving ? GROUND_ACCEL : GROUND_BRAKE) * dt;
     if (dl <= accel) {
       c.vel.x = tx;
       c.vel.z = tz;
@@ -121,18 +125,28 @@ export function stepMovement(c: Combatant, world: CollisionWorld, dt: number, wa
       c.vel.x += (dx / dl) * accel;
       c.vel.z += (dz / dl) * accel;
     }
-  } else {
-    // Air control
-    const tx = wish.x * Math.max(speed, Math.hypot(c.vel.x, c.vel.z));
-    const tz = wish.z * Math.max(speed, Math.hypot(c.vel.x, c.vel.z));
-    if (wish.lengthSq() > 0.001) {
-      c.vel.x += (tx - c.vel.x) * Math.min(1, AIR_ACCEL * dt * 0.25);
-      c.vel.z += (tz - c.vel.z) * Math.min(1, AIR_ACCEL * dt * 0.25);
+  } else if (wish.lengthSq() > 0.001) {
+    // Air control: steer toward the wished direction without gaining speed
+    // beyond run speed (or the speed you jumped with).
+    const cap = Math.max(speed, Math.hypot(c.vel.x, c.vel.z));
+    const tx = wish.x * cap;
+    const tz = wish.z * cap;
+    const dx = tx - c.vel.x;
+    const dz = tz - c.vel.z;
+    const dl = Math.hypot(dx, dz);
+    const accel = AIR_ACCEL * dt;
+    if (dl <= accel) {
+      c.vel.x = tx;
+      c.vel.z = tz;
+    } else {
+      c.vel.x += (dx / dl) * accel;
+      c.vel.z += (dz / dl) * accel;
     }
   }
 
   // Jump (on press, buffered by holding)
-  if (input.jump && c.grounded && !usingItem && (!prevJump || c.airTime === 0)) {
+  // Jump on press only: holding jump does not bunny-hop.
+  if (input.jump && !prevJump && c.grounded && !usingItem) {
     c.vel.y = JUMP_SPEED;
     c.grounded = false;
     c.slideTimer = 0;

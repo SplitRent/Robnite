@@ -1,7 +1,7 @@
 import { Vector3 } from 'three';
-import { TILE, TILE_H } from '../core/constants';
+import { SLAB, TILE, TILE_H } from '../core/constants';
 import { computeBuildTarget, type BuildTarget } from '../building/targeting';
-import { CONE_HEIGHT, DIR_VECTORS, FULL_QUAD_MASK, RAMP_SPIRAL, quadIndex, rampSurfaceHeight } from '../building/grid';
+import { CONE_HEIGHT, DIR_VECTORS, FULL_QUAD_MASK, RAMP_SPIRAL, coneLocalHeight, rampSurfaceHeight } from '../building/grid';
 import { rampCellActive, rampCellRange, removedTiles, selectionToEdit, tileAt } from '../building/edits';
 import { raySurface } from '../physics/collision';
 import type { EditTile } from '../rendering/BuildView';
@@ -279,10 +279,51 @@ function rayBox(o: Vector3, d: Vector3, b: { minX: number; minY: number; minZ: n
   return tmin;
 }
 
+/** Gap between neighbouring edit tiles (metres). */
+const TILE_GAP = 0.07;
+/** How far tiles float off the surface toward the viewer. */
+const TILE_LIFT = 0.06;
+
 /**
- * Edit tiles laid on the piece surface: 3x3 on walls, 2x2 on floors and
- * cones, and the Fortnite ramp grid (corners + strips) along the slope.
- * Normals face the viewer. `path` is the ramp drag in progress, if any.
+ * A tile over the local rectangle [u0,u1]x[v0,v1] of a surface, draped by
+ * sampling `surf` on a small grid. `surf` returns the world point on the
+ * surface (already lifted toward the viewer).
+ */
+function drapeTile(surf: (u: number, v: number) => Vector3, u0: number, u1: number, v0: number, v1: number, viewer: Vector3, n = 4): EditTile {
+  u0 += TILE_GAP;
+  u1 -= TILE_GAP;
+  v0 += TILE_GAP;
+  v1 -= TILE_GAP;
+  const points: Vector3[] = [];
+  for (let r = 0; r <= n; r++) for (let c = 0; c <= n; c++) points.push(surf(u0 + ((u1 - u0) * c) / n, v0 + ((v1 - v0) * r) / n));
+  const um = (u0 + u1) / 2;
+  const vm = (v0 + v1) / 2;
+  const center = surf(um, vm);
+  const e = 0.05;
+  const du = surf(um + e, vm).sub(surf(um - e, vm));
+  const dv = surf(um, vm + e).sub(surf(um, vm - e));
+  const normal = new Vector3().crossVectors(du, dv).normalize();
+  if (normal.dot(new Vector3().subVectors(viewer, center)) < 0) normal.negate();
+  return { points, n, center, normal };
+}
+
+/**
+ * Surface function for a horizontal-ish piece: height h(u, v) above the cell's
+ * min corner; the tile floats just above it, or just below the underside when
+ * the viewer is underneath.
+ */
+function heightSurface(x0: number, z0: number, viewer: Vector3, top: (u: number, v: number) => number, underside: number) {
+  return (u: number, v: number) => {
+    const y = top(u, v);
+    const below = viewer.y < y;
+    return new Vector3(x0 + u, below ? y - underside - TILE_LIFT : y + TILE_LIFT, z0 + v);
+  };
+}
+
+/**
+ * Edit tiles draped over the piece surface: 3x3 on walls, 2x2 on floors and
+ * cones (following the cone's faces), and the Fortnite ramp grid (corners +
+ * strips) along the slope. `path` is the ramp drag in progress, if any.
  */
 export function editTiles(piece: BuildPiece, viewer: Vector3, path: number[] | null = null): EditTile[] {
   const g = piece.grid;
@@ -290,35 +331,27 @@ export function editTiles(piece: BuildPiece, viewer: Vector3, path: number[] | n
   const y0 = g.y * TILE_H;
   const z0 = g.z * TILE;
   const out: EditTile[] = [];
-  const up = new Vector3(0, 1, 0);
   if (piece.type === 'wall') {
     const alongZ = (piece.rotation & 1) === 0;
-    const axisX = alongZ ? new Vector3(0, 0, 1) : new Vector3(1, 0, 0);
-    let normal = alongZ ? new Vector3(1, 0, 0) : new Vector3(0, 0, 1);
-    const planeCoord = alongZ ? x0 : z0;
-    if ((alongZ ? viewer.x : viewer.z) < planeCoord) normal = normal.negate();
-    const ax = axisX.clone();
-    // keep a right-handed basis: axisX × axisY = normal
-    if (new Vector3().crossVectors(ax, up).dot(normal) < 0) ax.negate();
-    for (let row = 0; row < 3; row++) {
-      for (let col = 0; col < 3; col++) {
-        const along = (col + 0.5) * (TILE / 3);
-        const center = alongZ ? new Vector3(x0, y0 + (row + 0.5) * (TILE_H / 3), z0 + along) : new Vector3(x0 + along, y0 + (row + 0.5) * (TILE_H / 3), z0);
-        out.push({ center, axisX: ax, axisY: up, normal, width: TILE / 3, height: TILE_H / 3 });
-      }
-    }
+    const plane = alongZ ? x0 : z0;
+    const side = (alongZ ? viewer.x : viewer.z) < plane ? -1 : 1;
+    const off = side * (SLAB / 2 + TILE_LIFT);
+    const surf = (u: number, v: number) => (alongZ ? new Vector3(x0 + off, y0 + v, z0 + u) : new Vector3(x0 + u, y0 + v, z0 + off));
+    const tw = TILE / 3;
+    const th = TILE_H / 3;
+    for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) out.push(drapeTile(surf, col * tw, (col + 1) * tw, row * th, (row + 1) * th, viewer, 1));
     return out;
   }
   if (piece.type === 'ramp') return rampEditTiles(piece, viewer, path);
-  // Floors and cones: flat 2x2 (cone tiles sit at the quadrant's mid height).
-  const baseY = piece.type === 'cone' ? y0 + CONE_HEIGHT * 0.5 : y0;
-  const below = viewer.y < baseY;
-  const normal = below ? new Vector3(0, -1, 0) : up.clone();
-  const axisX = new Vector3(1, 0, 0);
-  const axisY = below ? new Vector3(0, 0, 1) : new Vector3(0, 0, -1);
+  const surf =
+    piece.type === 'cone'
+      ? heightSurface(x0, z0, viewer, (u, v) => y0 + coneLocalHeight(piece.editMask, u, v), 0.1)
+      : heightSurface(x0, z0, viewer, () => y0 + SLAB / 2, SLAB);
+  const h = TILE / 2;
   for (let q = 0; q < 4; q++) {
-    const center = new Vector3(x0 + ((q & 1) + 0.5) * (TILE / 2), baseY, z0 + ((q >> 1) + 0.5) * (TILE / 2));
-    out.push({ center, axisX, axisY, normal, width: TILE / 2, height: TILE / 2 });
+    const u = (q & 1) * h;
+    const v = (q >> 1) * h;
+    out.push(drapeTile(surf, u, u + h, v, v + h, viewer, piece.type === 'cone' ? 8 : 1));
   }
   return out;
 }
@@ -350,50 +383,21 @@ function rampEditTiles(piece: BuildPiece, viewer: Vector3, path: number[] | null
   const g = piece.grid;
   const x0 = g.x * TILE;
   const z0 = g.z * TILE;
-  const up = new Vector3(0, 1, 0);
-  const spiral = (piece.editMask & RAMP_SPIRAL) !== 0;
   const dragging = !!path && path.length > 0;
   // Arrows show the shape the drag would make, or the current one.
   const preview = dragging && path.length > 1 ? selectionToEdit('ramp', piece.editMask, new Set(path), path) : null;
   const arrows = preview ? rampArrows(preview.mask, preview.rampDir!) : dragging ? new Map<number, number>() : rampArrows(piece.editMask, piece.rampDir);
+  const surf = heightSurface(x0, z0, viewer, (u, v) => rampDisplayHeight(piece, x0 + u, z0 + v) ?? g.y * TILE_H, SLAB);
   const out: EditTile[] = [];
   for (let cell = 0; cell < 9; cell++) {
-    const [xa, xb] = rampCellRange(cell % 3);
-    const [za, zb] = rampCellRange(Math.floor(cell / 3));
-    const cx = x0 + (xa + xb) / 2;
-    const cz = z0 + (za + zb) / 2;
-    // Slope of this cell: its flight's direction and rise per metre.
-    let dir = piece.rampDir;
-    let rise = TILE_H / TILE;
-    if (spiral) {
-      rise *= 0.5;
-      if (!(piece.editMask & (1 << quadIndex(g, cx, cz)))) dir += 2;
-    }
-    const [dx, dz] = DIR_VECTORS[dir & 3];
-    const d = new Vector3(dx, 0, dz);
-    const axisY = d.clone().addScaledVector(up, rise).normalize();
-    let normal = up.clone().addScaledVector(d, -rise).normalize();
-    let axisX = new Vector3().crossVectors(axisY, normal);
-    const cy = rampDisplayHeight(piece, cx, cz) ?? g.y * TILE_H + TILE_H / 2;
-    if (viewer.y < cy - 1) {
-      normal = normal.negate();
-      axisX = axisX.negate();
-    }
-    const alongZ = (dir & 1) === 0;
-    const extAlong = alongZ ? zb - za : xb - xa;
-    const extSide = alongZ ? xb - xa : zb - za;
+    const [ua, ub] = rampCellRange(cell % 3);
+    const [va, vb] = rampCellRange(Math.floor(cell / 3));
+    const tile = drapeTile(surf, ua, ub, va, vb, viewer, 3);
     const arrowDir = arrows.get(cell);
-    out.push({
-      center: new Vector3(cx, cy, cz),
-      axisX,
-      axisY,
-      normal,
-      width: extSide,
-      height: extAlong * Math.hypot(1, rise),
-      hidden: cell === 4,
-      gray: dragging ? !path.includes(cell) : !rampCellActive(piece.editMask, cell),
-      arrow: arrowDir === undefined ? undefined : new Vector3(DIR_VECTORS[arrowDir][0], 0, DIR_VECTORS[arrowDir][1]),
-    });
+    tile.hidden = cell === 4;
+    tile.gray = dragging ? !path.includes(cell) : !rampCellActive(piece.editMask, cell);
+    if (arrowDir !== undefined) tile.arrow = new Vector3(DIR_VECTORS[arrowDir][0], 0, DIR_VECTORS[arrowDir][1]);
+    out.push(tile);
   }
   return out;
 }

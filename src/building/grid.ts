@@ -162,18 +162,56 @@ export function rampSurfaceHeight(g: GridCoordinate, dir: number, mask: number, 
   return y0 + rampProgress(g, dir, px, pz) * TILE_H;
 }
 
-/** Cone (pyramid roof) height; quadrants removed by edits return null. */
+/**
+ * CONE EDITS (Fortnite): editing never cuts a cone apart. Each tile that is
+ * selected (its bit cleared in the mask) lifts that outer corner up to the
+ * peak, opening the cone on that side: one tile opens a corner, two
+ * neighbouring tiles open a whole side, and so on.
+ *
+ * The roof is four triangular faces (centre + one edge each). Corner heights
+ * are 0 (down) or CONE_HEIGHT (raised); the centre is always at the peak.
+ */
+export function coneCornerHeights(mask: number): [number, number, number, number] {
+  const h = (q: number) => (mask & (1 << q) ? 0 : CONE_HEIGHT);
+  return [h(0), h(1), h(2), h(3)];
+}
+
+/** Local cone height (0..CONE_HEIGHT) at local (u, v) in [0, TILE]² for a mask. */
+export function coneLocalHeight(mask: number, u: number, v: number): number {
+  const c = coneCornerHeights(mask);
+  const T = TILE;
+  const du = u - T / 2;
+  const dv = v - T / 2;
+  // Pick the face (edge) this point lies over, then interpolate across the
+  // triangle centre → corner a → corner b. The corners of an edge are
+  // interpolated linearly along it; the centre sits at the peak.
+  let a: number;
+  let b: number;
+  let along: number; // 0..1 from corner a to corner b
+  let toEdge: number; // 0 at centre, 1 at the edge
+  if (Math.abs(dv) >= Math.abs(du)) {
+    toEdge = Math.min(1, Math.abs(dv) / (T / 2));
+    if (dv < 0) [a, b] = [c[0], c[1]];
+    else [a, b] = [c[2], c[3]];
+  } else {
+    toEdge = Math.min(1, Math.abs(du) / (T / 2));
+    if (du < 0) [a, b] = [c[0], c[2]];
+    else [a, b] = [c[1], c[3]];
+  }
+  if (Math.abs(dv) >= Math.abs(du)) along = toEdge > 1e-6 ? (du / (T / 2) / toEdge + 1) / 2 : 0.5;
+  else along = toEdge > 1e-6 ? (dv / (T / 2) / toEdge + 1) / 2 : 0.5;
+  along = Math.min(1, Math.max(0, along));
+  const edgeH = a + (b - a) * along;
+  return CONE_HEIGHT + (edgeH - CONE_HEIGHT) * toEdge;
+}
+
+/** Cone surface height for a (possibly edited) cone; never null inside the cell. */
 export function coneHeight(g: GridCoordinate, mask: number, px: number, pz: number): number | null {
   const x0 = g.x * TILE;
   const z0 = g.z * TILE;
   const e = 0.02;
   if (px < x0 - e || px > x0 + TILE + e || pz < z0 - e || pz > z0 + TILE + e) return null;
-  const q = quadIndex(g, px, pz);
-  if (!(mask & (1 << q))) return null;
-  const u = Math.abs((px - (x0 + TILE / 2)) / TILE);
-  const v = Math.abs((pz - (z0 + TILE / 2)) / TILE);
-  const m = Math.min(0.5, Math.max(u, v));
-  return g.y * TILE_H + CONE_HEIGHT * (1 - 2 * m);
+  return g.y * TILE_H + coneLocalHeight(mask, Math.min(TILE, Math.max(0, px - x0)), Math.min(TILE, Math.max(0, pz - z0)));
 }
 
 /** 2x2 quadrant index (iz*2 + ix) for floors, cones and ramps. */

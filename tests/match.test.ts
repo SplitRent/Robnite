@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Vector3 } from 'three';
 import { Match } from '../src/game/Match';
 import { MODES } from '../src/game/modes';
 import type { CosmeticLoadout } from '../src/player/Combatant';
@@ -60,8 +61,16 @@ describe('match simulation', () => {
     expect(m.builds.count).toBeGreaterThan(6);
     let rounds = 0;
     m.events.on('ROUND_ENDED', () => rounds++);
-    for (let i = 0; i < 40 && !m.result; i++) run(m, 10);
+    // The bot finds the (idle) human inside their box and fights.
+    for (let i = 0; i < 12 && m.human.stats.damageTaken === 0; i++) run(m, 10);
+    expect(m.human.stats.damageTaken).toBeGreaterThan(0);
+    // An elimination ends the round and a new one starts with fresh boxes.
+    const priv = m as unknown as { applyDamage(t: unknown, n: number, a: unknown, s: string, h: boolean, p: Vector3, c: string): void };
+    priv.applyDamage(m.human, 500, m.combatants[1], 'weapon', false, m.human.pos.clone(), 'weapon');
+    for (let i = 0; i < 20 && rounds === 0; i++) run(m, 1);
     expect(rounds).toBeGreaterThan(0);
+    run(m, 8);
+    expect(m.builds.count).toBeGreaterThan(6);
   }, 60000);
 
   it('zone war runs with storm', () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
+import { TILE, TILE_H } from '../src/core/constants';
 import { Match } from '../src/game/Match';
 import { MODES } from '../src/game/modes';
 import { WEAPONS, weaponStats } from '../src/weapons/weapons';
@@ -131,14 +132,14 @@ describe('combat', () => {
   it('walls block bullets and take structure damage', () => {
     const { m, h, bot } = setup();
     h.inventory.selected = 3;
-    const gy = Math.floor((h.pos.y + 0.3) / 3.2);
+    const gy = Math.floor((h.pos.y + 0.3) / TILE_H);
     const t = [gy, gy - 1, gy + 1].map((y) => makeTarget('wall', { x: -7, y, z: -1 }, 1)).find((c) => m.builds.validate(c, null).valid)!;
     expect(t).toBeDefined();
     const wall = m.builds.place(t, null, { ownerId: 99 });
     expect(wall).not.toBeNull();
-    // Wall spans x -28..-24 on the line z = -4; aim at the bot behind it.
-    bot.pos.x = -26;
-    h.pos.x = -26;
+    // Wall spans cell x = -7 on the line z = -TILE; aim at the bot behind it.
+    bot.pos.x = -6.5 * TILE;
+    h.pos.x = -6.5 * TILE;
     aimAt(m, bot.chest(new Vector3()));
     // Stack a second wall so the shot line (from a higher eye) is fully covered.
     m.builds.place(makeTarget('wall', { x: -7, y: t.grid.y + 1, z: -1 }, 1), null, { ownerId: 99 });
@@ -199,12 +200,13 @@ describe('bots', () => {
     const brain = m.brains[0];
     const bot = brain.self;
     const h = m.human;
-    h.pos.set(-24, m.world.collision.terrainHeight(-24, 0), 0);
-    bot.pos.set(-24, m.world.collision.terrainHeight(-24, -10), -10);
+    const x = -6 * TILE;
+    h.pos.set(x, m.world.collision.terrainHeight(x, 0), 0);
+    bot.pos.set(x, m.world.collision.terrainHeight(x, -10), -10);
     const canSee = (brain as unknown as { canSee(o: typeof h): boolean }).canSee.bind(brain);
     bot.yaw = Math.PI; // facing +Z toward the human
     expect(canSee(h)).toBe(true);
-    const gy = Math.floor((h.pos.y + 0.3) / 3.2);
+    const gy = Math.floor((h.pos.y + 0.3) / TILE_H);
     for (const x of [-7, -6]) for (let y = gy - 1; y < gy + 2; y++) m.builds.place(makeTarget('wall', { x, y, z: -1 }, 1), null, { ownerId: 99 });
     expect(canSee(h)).toBe(false);
   });
