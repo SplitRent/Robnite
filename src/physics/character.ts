@@ -1,5 +1,5 @@
 import { Vector3 } from 'three';
-import { SLAB, STEP_HEIGHT, TILE_H } from '../core/constants';
+import { SLAB, STEP_HEIGHT } from '../core/constants';
 import { makeAABB, type Collider, type CollisionWorld } from './collision';
 
 export interface CharacterBody {
@@ -148,6 +148,10 @@ function resolveHorizontal(world: CollisionWorld, body: CharacterBody, axis: 'x'
       if (sh === null) continue;
       if (pos.y >= sh - SURFACE_TOP_TOLERANCE) continue; // walking onto it
       if (pos.y + h <= sh - 0.12) continue; // passing underneath
+      // Already inside it before this move (e.g. just edited around us): let
+      // the character walk out instead of pinning them.
+      const psh = c.height(prevPos.x, prevPos.z);
+      if (psh !== null && prevPos.y < psh - SURFACE_TOP_TOLERANCE && prevPos.y + h > psh - 0.12) continue;
       if (axis === 'x') {
         pos.x = prevPos.x;
         vel.x = 0;
@@ -212,10 +216,13 @@ function resolveVertical(world: CollisionWorld, body: CharacterBody, prevPos: Ve
   return { landed, ceiling };
 }
 
+/** Deepest a slope may catch the feet and still lift the character onto it. */
+const KNEE = 0.9;
+
 /**
- * A ramp or cone built on top of a character leaves them inside its slope.
- * Like Fortnite, lift them onto the surface (if there is room above) instead
- * of trapping them in it.
+ * Safety net for a character caught slightly inside a slope (builds spawned
+ * deeper than knee height are phased by the build system instead): lift them
+ * onto the surface if there is room above.
  */
 function depenetrate(world: CollisionWorld, body: CharacterBody): void {
   const { pos, vel, radius: r, height: h } = body;
@@ -226,7 +233,7 @@ function depenetrate(world: CollisionWorld, body: CharacterBody): void {
     const sh = c.height(pos.x, pos.z);
     if (sh === null) continue;
     // Overlapping: feet below the slope while the head is above it.
-    if (pos.y < sh - 0.02 && pos.y + h > sh - 0.12 && sh - pos.y <= TILE_H + 0.1) lift = Math.max(lift, sh);
+    if (pos.y < sh - 0.02 && pos.y + h > sh - 0.12 && sh - pos.y <= KNEE) lift = Math.max(lift, sh);
   }
   if (lift > pos.y && !bodyBlocked(world, new Vector3(pos.x, lift + 0.001, pos.z), r - 0.05, h)) {
     pos.y = lift;

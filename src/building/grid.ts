@@ -89,7 +89,8 @@ export function pieceBounds(piece: BuildPieceType, g: GridCoordinate, rotation: 
     case 'ramp':
       return makeAABB(x0, y0, z0, x0 + TILE, y0 + TILE_H, z0 + TILE);
     case 'cone':
-      return makeAABB(x0, y0, z0, x0 + TILE, y0 + CONE_HEIGHT, z0 + TILE);
+      // Edited cones can lift corners to the top of the cell.
+      return makeAABB(x0, y0, z0, x0 + TILE, y0 + TILE_H, z0 + TILE);
   }
 }
 
@@ -163,46 +164,50 @@ export function rampSurfaceHeight(g: GridCoordinate, dir: number, mask: number, 
 }
 
 /**
- * CONE EDITS (Fortnite): editing never cuts a cone apart. Each tile that is
- * selected (its bit cleared in the mask) lifts that outer corner up to the
- * peak, opening the cone on that side: one tile opens a corner, two
- * neighbouring tiles open a whole side, and so on.
+ * CONE EDITS (Fortnite): editing never cuts a cone apart. Each selected tile
+ * (its bit cleared in the mask) pulls that outer corner all the way up to the
+ * top of the grid box, opening the cone on that side:
+ *   1 tile            one corner lifted to the ceiling
+ *   2 tiles, a side   a straight ramp from the floor edge to the ceiling edge
+ *   2 tiles, diagonal a saddle (ridge between the lifted corners)
+ *   3 tiles           only one corner stays down
+ * An unedited cone is the usual pyramid with its peak at CONE_HEIGHT.
  *
- * The roof is four triangular faces (centre + one edge each). Corner heights
- * are 0 (down) or CONE_HEIGHT (raised); the centre is always at the peak.
+ * The roof is four triangular faces (centre + one edge each), so every shape
+ * above is exact: a lifted side is a single plane.
  */
 export function coneCornerHeights(mask: number): [number, number, number, number] {
-  const h = (q: number) => (mask & (1 << q) ? 0 : CONE_HEIGHT);
+  const h = (q: number) => (mask & (1 << q) ? 0 : TILE_H);
   return [h(0), h(1), h(2), h(3)];
 }
 
-/** Local cone height (0..CONE_HEIGHT) at local (u, v) in [0, TILE]² for a mask. */
+/** Height of the cone's centre point for a mask. */
+export function coneCenterHeight(mask: number): number {
+  if ((mask & FULL_QUAD_MASK) === FULL_QUAD_MASK) return CONE_HEIGHT;
+  const c = coneCornerHeights(mask);
+  return (c[0] + c[1] + c[2] + c[3]) / 4;
+}
+
+/** Local cone height (0..TILE_H) at local (u, v) in [0, TILE]² for a mask. */
 export function coneLocalHeight(mask: number, u: number, v: number): number {
   const c = coneCornerHeights(mask);
+  const peak = coneCenterHeight(mask);
   const T = TILE;
   const du = u - T / 2;
   const dv = v - T / 2;
   // Pick the face (edge) this point lies over, then interpolate across the
-  // triangle centre → corner a → corner b. The corners of an edge are
-  // interpolated linearly along it; the centre sits at the peak.
+  // triangle centre → corner a → corner b.
+  const onZEdge = Math.abs(dv) >= Math.abs(du);
+  const toEdge = Math.min(1, (onZEdge ? Math.abs(dv) : Math.abs(du)) / (T / 2));
   let a: number;
   let b: number;
-  let along: number; // 0..1 from corner a to corner b
-  let toEdge: number; // 0 at centre, 1 at the edge
-  if (Math.abs(dv) >= Math.abs(du)) {
-    toEdge = Math.min(1, Math.abs(dv) / (T / 2));
-    if (dv < 0) [a, b] = [c[0], c[1]];
-    else [a, b] = [c[2], c[3]];
-  } else {
-    toEdge = Math.min(1, Math.abs(du) / (T / 2));
-    if (du < 0) [a, b] = [c[0], c[2]];
-    else [a, b] = [c[1], c[3]];
-  }
-  if (Math.abs(dv) >= Math.abs(du)) along = toEdge > 1e-6 ? (du / (T / 2) / toEdge + 1) / 2 : 0.5;
-  else along = toEdge > 1e-6 ? (dv / (T / 2) / toEdge + 1) / 2 : 0.5;
+  if (onZEdge) [a, b] = dv < 0 ? [c[0], c[1]] : [c[2], c[3]];
+  else [a, b] = du < 0 ? [c[0], c[2]] : [c[1], c[3]];
+  // 0..1 from corner a to corner b along the edge this point projects onto.
+  let along = toEdge > 1e-6 ? ((onZEdge ? du : dv) / (T / 2) / toEdge + 1) / 2 : 0.5;
   along = Math.min(1, Math.max(0, along));
   const edgeH = a + (b - a) * along;
-  return CONE_HEIGHT + (edgeH - CONE_HEIGHT) * toEdge;
+  return peak + (edgeH - peak) * toEdge;
 }
 
 /** Cone surface height for a (possibly edited) cone; never null inside the cell. */

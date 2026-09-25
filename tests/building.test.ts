@@ -88,14 +88,25 @@ describe('build targeting (crosshair → grid)', () => {
     expect(builds.validate(t, actor).valid).toBe(false);
   });
 
-  it('floor beneath the player is allowed (lifts the player) but a wall through the player is blocked', () => {
-    const { builds, actor } = flatWorld();
-    actor.pos.x = 2;
-    actor.pos.z = 2;
-    expect(builds.validate(makeTarget('floor', { x: 0, y: 0, z: 0 }, 0), actor).valid).toBe(true);
-    const through = makeTarget('wall', { x: 0, y: 0, z: 0 }, 0);
-    actor.pos.x = 0.1; // standing on the wall line
-    expect(builds.validate(through, actor)).toEqual({ valid: false, reason: 'Blocked by player' });
+  it('a floor at the feet lifts the player; a wall through the player spawns phased until they leave', () => {
+    const { world, builds, actor } = flatWorld();
+    Object.assign(actor.pos, { x: 2, y: 0, z: 2 });
+    const floor = builds.place(makeTarget('floor', { x: 0, y: 0, z: 0 }, 0), actor)!;
+    expect(floor.phased).toBe(false);
+    expect(actor.pos.y).toBeGreaterThan(0.05); // pushed up on top of it
+    // A wall built through the player is placed, but phased (no collision).
+    Object.assign(actor.pos, { x: 0.1, y: 0, z: 2 });
+    const wall = builds.place(makeTarget('wall', { x: 0, y: 0, z: 0 }, 0), actor)!;
+    expect(wall).not.toBeNull();
+    expect(wall.phased).toBe(true);
+    expect(world.raycast(new Vector3(-2, 1, 2), new Vector3(1, 0, 0), 4, { includeTerrain: false })?.collider?.ref).not.toBe(wall.id);
+    builds.update(1 / 60);
+    expect(wall.phased).toBe(true); // still inside it
+    // Once the player steps out it turns solid.
+    actor.pos.x = 1.5;
+    builds.update(1 / 60);
+    expect(wall.phased).toBe(false);
+    expect(world.raycast(new Vector3(-2, 1, 2), new Vector3(1, 0, 0), 4, { includeTerrain: false })?.collider?.ref).toBe(wall.id);
   });
 
   it('ramp direction follows the look direction and rotates with R', () => {
@@ -196,6 +207,10 @@ describe('editing', () => {
     expect(selectionToEdit('wall', FULL_WALL_MASK, new Set([4]))?.mask).toBe(WALL_PRESETS.window);
     expect(selectionToEdit('wall', FULL_WALL_MASK, new Set([0, 1, 2, 3, 4, 5, 6, 7, 8]))).toBeNull();
     expect(selectionToEdit('floor', 0xf, new Set([0, 1]))?.mask).toBe(FLOOR_PRESETS.half);
+    // Edits that would split a wall / floor into separate pieces are rejected.
+    expect(selectionToEdit('wall', FULL_WALL_MASK, new Set([3, 4, 5]))).toBeNull(); // middle row: top and bottom apart
+    expect(selectionToEdit('floor', 0xf, new Set([1, 2]))).toBeNull(); // diagonal pair
+    expect(selectionToEdit('wall', FULL_WALL_MASK, new Set([1, 4]))?.mask).toBe(WALL_PRESETS.door);
     // Ramp grid (iz*3 + ix): corners 0,2,6,8; strips 1,3,5,7; 4 is the hole.
     // The ramp rises toward the last tile the drag touched.
     const ramp = (path: number[]) => selectionToEdit('ramp', 0xf, new Set(path), path);
@@ -230,22 +245,25 @@ describe('editing', () => {
     expect(builds.isEdited(piece)).toBe(false);
   });
 
-  it('cone edits lift corners open instead of cutting the cone', () => {
+  it('cone edits lift corners to the ceiling instead of cutting the cone', () => {
     const g = { x: 0, y: 0, z: 0 };
     const peak = TILE_H * 0.5;
     // Full cone: pyramid, corners on the floor, centre at the peak.
     expect(coneHeight(g, 0xf, 0.01, 0.01)).toBeCloseTo(0, 1);
     expect(coneHeight(g, 0xf, TILE / 2, TILE / 2)).toBeCloseTo(peak);
-    // One tile (quadrant 0) edited: that corner rises to the peak, the others stay down.
+    // One tile (quadrant 0) edited: that corner reaches the top of the grid box.
     const one = 0xf & ~1;
-    expect(coneHeight(g, one, 0.01, 0.01)).toBeCloseTo(peak, 1);
+    expect(coneHeight(g, one, 0.01, 0.01)).toBeCloseTo(TILE_H, 1);
     expect(coneHeight(g, one, TILE - 0.01, TILE - 0.01)).toBeCloseTo(0, 1);
     // Still solid everywhere — nothing is removed.
     for (const [x, z] of [[0.5, 0.5], [TILE - 0.5, 0.5], [0.5, TILE - 0.5]]) expect(coneHeight(g, one, x, z)).not.toBeNull();
-    // Two tiles on one side: that whole edge is up.
+    // Two tiles on one side: a straight ramp from the far edge (floor) to that edge (ceiling).
     const side = 0xf & ~0b0011;
-    expect(coneHeight(g, side, TILE / 2, 0.01)).toBeCloseTo(peak, 1);
-    expect(coneHeight(g, side, TILE / 2, TILE - 0.01)).toBeCloseTo(0, 1);
+    for (const [x, z] of [[0.3, 0.2], [TILE / 2, TILE / 2], [TILE - 0.4, TILE * 0.8], [1.1, TILE * 0.3]]) {
+      expect(coneHeight(g, side, x, z)).toBeCloseTo(TILE_H * (1 - z / TILE), 5);
+    }
+    // Head room: a player can walk under the lifted side.
+    expect(coneHeight(g, side, TILE / 2, 1)!).toBeGreaterThan(1.8 + 0.5);
   });
 
   it('removing a corner L of wall tiles cuts the wall diagonally', () => {
@@ -311,19 +329,29 @@ describe('destruction & support', () => {
     expect(builds.pieces.has(floor2.id)).toBe(true);
   });
 
-  it('a ramp built on top of a player lifts them onto it instead of trapping them', () => {
+  it('a ramp built on a player: knee-deep lifts them up, deeper phases around them', () => {
     const { world, builds, actor } = flatWorld();
+    // Near the low end (slope below the knee): pushed up onto the ramp.
+    Object.assign(actor.pos, { x: TILE / 2, y: 0, z: -0.8 });
+    const low = builds.place(makeTarget('ramp', { x: 0, y: 0, z: -1 }, 0), actor)!;
+    expect(low.phased).toBe(false);
+    expect(actor.pos.y).toBeGreaterThan(0.3);
+    builds.destroy(low.id, 'reset');
+    // In the middle (slope at chest height): the ramp spawns phased.
     Object.assign(actor.pos, { x: TILE / 2, y: 0, z: -TILE / 2 });
-    builds.place(makeTarget('ramp', { x: 0, y: 0, z: -1 }, 0), actor);
+    const mid = builds.place(makeTarget('ramp', { x: 0, y: 0, z: -1 }, 0), actor)!;
+    expect(mid.phased).toBe(true);
+    expect(actor.pos.y).toBe(0);
+    // The player can walk out through it; it then turns solid and walkable.
     const body = { pos: new Vector3(TILE / 2, 0, -TILE / 2), vel: new Vector3(), radius: 0.38, height: 1.8, grounded: true };
-    moveCharacter(world, body, 1 / 60);
-    expect(body.pos.y).toBeCloseTo(TILE_H / 2, 1);
-    // And they can walk on up it.
-    for (let i = 0; i < 40; i++) {
-      body.vel.set(0, body.vel.y - 24 / 60, -5);
+    for (let i = 0; i < 60; i++) {
+      body.vel.set(0, body.vel.y - 24 / 60, 5);
       moveCharacter(world, body, 1 / 60);
+      Object.assign(actor.pos, body.pos);
+      builds.update(1 / 60);
     }
-    expect(body.pos.y).toBeGreaterThan(TILE_H * 0.8);
+    expect(body.pos.z).toBeGreaterThan(1);
+    expect(mid.phased).toBe(false);
   });
 
   it('ramps are walkable', () => {

@@ -45,6 +45,11 @@ export interface BuildPiece {
   bounds: AABB;
   /** Pieces pre-placed by a mode (practice walls) cannot be damaged. */
   indestructible: boolean;
+  /**
+   * Phased ("yellow") state: the piece was built into a player, so it has no
+   * collision (players and bullets pass through) until nobody overlaps it.
+   */
+  phased: boolean;
 }
 
 /** The subset of a combatant the build system needs. */
@@ -60,10 +65,18 @@ export interface BuildActor {
 export interface BodyInfo {
   id: number;
   pos: { x: number; y: number; z: number };
+  vel?: { x: number; y: number; z: number };
   radius: number;
   height: number;
   alive: boolean;
 }
+
+/**
+ * Knee height for the Fortnite spawn rule: a piece that only catches a
+ * player below this (relative to their feet) pushes them up on top of it;
+ * anything higher leaves the piece phased around them.
+ */
+export const PHASE_KNEE = 0.9;
 
 export interface Validation {
   valid: boolean;
@@ -129,8 +142,8 @@ export class BuildSystem {
     // Buried in terrain?
     if (this.buriedFraction(piece, grid, rotation) > 0.92) return { valid: false, reason: 'Blocked by terrain' };
     // Players standing in the way (small tolerance so it never feels sticky).
-    const blocking = this.bodyBlockReason(piece, grid, rotation);
-    if (blocking) return { valid: false, reason: blocking };
+    // Players in the way do not block building: the piece spawns phased
+    // around them (see resolveOverlaps), like Fortnite.
     // Static world geometry.
     const shrunk = shrink(bounds, piece === 'wall' || piece === 'floor' ? 0.06 : 0.35);
     const hits = this.world.query(shrunk);
@@ -181,6 +194,7 @@ export class BuildSystem {
       colliders: [],
       bounds: pieceBounds(target.piece, target.grid, target.rotation),
       indestructible: !!opts.indestructible,
+      phased: false,
     };
     if (opts.indestructible) {
       piece.health = piece.maxHealth;
@@ -189,8 +203,66 @@ export class BuildSystem {
     this.pieces.set(piece.id, piece);
     this.occupancy.set(piece.key, piece.id);
     this.rebuildColliders(piece);
+    this.resolveOverlaps(piece);
     this.events.emit('BUILD_PLACED', { piece });
     return piece;
+  }
+
+  /**
+   * Fortnite's spawn rule for a piece that appears inside players: if it only
+   * catches someone at the feet/knees and there is room above, they are
+   * pushed up onto it; otherwise the piece is phased (non-solid, yellow)
+   * until everyone has left it.
+   */
+  private resolveOverlaps(piece: BuildPiece): void {
+    let phase = false;
+    for (const body of this.bodies()) {
+      if (!body.alive) continue;
+      const top = this.overlapTop(piece, body);
+      if (top === null) continue;
+      const lift = top - body.pos.y;
+      const room = !this.world.query(makeAABB(body.pos.x - body.radius + 0.05, top + 0.02, body.pos.z - body.radius + 0.05, body.pos.x + body.radius - 0.05, top + body.height, body.pos.z + body.radius - 0.05)).some(
+        (c) => c.kind === 'box' && !(c.owner === 'build' && c.ref === piece.id),
+      );
+      if (piece.type !== 'wall' && lift <= PHASE_KNEE && room) {
+        body.pos.y = top + 0.001;
+        if (body.vel && body.vel.y < 0) body.vel.y = 0;
+      } else phase = true;
+    }
+    this.setPhased(piece, phase);
+  }
+
+  /**
+   * If a body overlaps the solid part of the piece, the height of the piece's
+   * top above that body (the surface it would stand on); otherwise null.
+   */
+  private overlapTop(piece: BuildPiece, body: BodyInfo): number | null {
+    const r = body.radius - 0.06;
+    const feet = body.pos.y;
+    const head = body.pos.y + body.height;
+    if (piece.type === 'ramp' || piece.type === 'cone') {
+      let top: number | null = null;
+      for (const c of piece.colliders) {
+        if (c.kind !== 'surface') continue;
+        for (const [ox, oz] of [[0, 0], [r, r], [r, -r], [-r, r], [-r, -r]]) {
+          const sh = c.height(body.pos.x + ox, body.pos.z + oz);
+          if (sh === null) continue;
+          // The slope passes through the body (feet below it, head above its underside).
+          if (feet < sh - 0.03 && head > sh - 0.15) top = top === null ? sh : Math.max(top, sh);
+        }
+      }
+      return top;
+    }
+    const bb = makeAABB(body.pos.x - r, feet + 0.02, body.pos.z - r, body.pos.x + r, head - 0.02, body.pos.z + r);
+    let top: number | null = null;
+    for (const c of piece.colliders) if (aabbOverlap(c.box, bb)) top = Math.max(top ?? -Infinity, c.box.maxY);
+    return top;
+  }
+
+  private setPhased(piece: BuildPiece, phased: boolean): void {
+    if (piece.phased === phased) return;
+    piece.phased = phased;
+    for (const c of piece.colliders) c.enabled = !phased;
   }
 
   /** (Re)create colliders to match the piece's current edit state. */
@@ -218,6 +290,7 @@ export class BuildSystem {
         break;
       }
     }
+    for (const c of piece.colliders) c.enabled = !piece.phased;
   }
 
   canEdit(piece: BuildPiece, actor: BuildActor): Validation {
@@ -244,6 +317,7 @@ export class BuildSystem {
       piece.editMask = mask & (piece.type === 'wall' ? FULL_WALL_MASK : FULL_QUAD_MASK);
     }
     this.rebuildColliders(piece);
+    this.resolveOverlaps(piece);
     this.events.emit('BUILD_EDITED', { piece, byId: actor?.id ?? -1 });
     return true;
   }
@@ -255,6 +329,7 @@ export class BuildSystem {
     piece.editMask = piece.type === 'wall' ? FULL_WALL_MASK : FULL_QUAD_MASK;
     piece.rampDir = piece.rotation & 3;
     this.rebuildColliders(piece);
+    this.resolveOverlaps(piece);
     this.events.emit('BUILD_EDIT_RESET', { piece, byId: actor?.id ?? -1 });
     return true;
   }
@@ -299,6 +374,11 @@ export class BuildSystem {
   update(dt: number): void {
     this.time += dt;
     for (const p of this.pieces.values()) {
+      if (p.phased) {
+        let inside = false;
+        for (const b of this.bodies()) if (b.alive && this.overlapTop(p, b) !== null) inside = true;
+        if (!inside) this.setPhased(p, false);
+      }
       if (p.progress < 1) {
         const stats = MATERIAL_STATS[p.material];
         const prevProgress = p.progress;
@@ -324,31 +404,6 @@ export class BuildSystem {
     const top = piece === 'floor' ? b.maxY : piece === 'wall' ? b.maxY - 0.25 : b.minY + TILE_H * 0.4;
     for (const [x, z] of pts) if (this.world.terrainHeight(x, z) > top) buried++;
     return buried / pts.length;
-  }
-
-  private bodyBlockReason(piece: BuildPieceType, g: GridCoordinate, rotation: number): string | null {
-    const bounds = pieceBounds(piece, g, rotation);
-    for (const body of this.bodies()) {
-      if (!body.alive) continue;
-      const tol = 0.12;
-      const bb = makeAABB(
-        body.pos.x - body.radius + tol,
-        body.pos.y + 0.05,
-        body.pos.z - body.radius + tol,
-        body.pos.x + body.radius - tol,
-        body.pos.y + body.height - tol,
-        body.pos.z + body.radius - tol,
-      );
-      if (piece === 'wall') {
-        if (aabbOverlap(bounds, bb)) return 'Blocked by player';
-      } else if (piece === 'floor') {
-        // A floor at (or just above) the feet lifts the player; one through the torso is blocked.
-        const fy = g.y * TILE_H;
-        if (aabbOverlap(bounds, bb) && fy > body.pos.y + 0.6) return 'Blocked by player';
-      }
-      // Ramps and cones lift players standing in them.
-    }
-    return null;
   }
 
   /** True if a piece at this slot would rest on ground, world geometry or another build. */
