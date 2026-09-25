@@ -6,6 +6,7 @@ import {
   Float32BufferAttribute,
   Group,
   LineBasicMaterial,
+  LineLoop,
   LineSegments,
   Matrix4,
   Mesh,
@@ -15,7 +16,7 @@ import {
 } from 'three';
 import { SLAB, TILE, TILE_H } from '../core/constants';
 import type { BuildPiece } from '../building/BuildSystem';
-import { CONE_HEIGHT, FULL_QUAD_MASK, FULL_WALL_MASK, RAMP_SPIRAL, coneCornerHeights, wallTriangleCorner, type BuildMaterial, type BuildPieceType } from '../building/grid';
+import { FULL_QUAD_MASK, FULL_WALL_MASK, RAMP_SPIRAL, coneCenterHeight, coneCornerHeights, wallTriangleCorner, type BuildMaterial, type BuildPieceType } from '../building/grid';
 import type { BuildTarget } from '../building/targeting';
 import { mergeAll, slabGeometry } from './geometry';
 import { buildTexture } from './textures';
@@ -190,7 +191,7 @@ function coneGeometry(mask: number): BufferGeometry {
   const T = TILE;
   const h = coneCornerHeights(mask);
   const corner = (q: number) => new Vector3((q & 1) * T, h[q], (q >> 1) * T);
-  const c = new Vector3(T / 2, CONE_HEIGHT, T / 2);
+  const c = new Vector3(T / 2, coneCenterHeight(mask), T / 2);
   const P: number[] = [];
   const thick = 0.1;
   const up = new Vector3();
@@ -262,6 +263,24 @@ function setTileGeometry(g: BufferGeometry, t: EditTile): void {
   t.points.forEach((p, i) => pos!.setXYZ(i, p.x, p.y, p.z));
   pos.needsUpdate = true;
   g.computeBoundingSphere();
+}
+
+/** Perimeter of a draped tile as a line loop. */
+function setTileOutline(g: BufferGeometry, t: EditTile): void {
+  const n = t.n;
+  const at = (r: number, c: number) => t.points[r * (n + 1) + c];
+  const ring: Vector3[] = [];
+  for (let c = 0; c < n; c++) ring.push(at(0, c));
+  for (let r = 0; r < n; r++) ring.push(at(r, n));
+  for (let c = n; c > 0; c--) ring.push(at(n, c));
+  for (let r = n; r > 0; r--) ring.push(at(r, 0));
+  let pos = g.getAttribute('position') as Float32BufferAttribute | undefined;
+  if (!pos || pos.count !== ring.length) {
+    pos = new Float32BufferAttribute(new Float32Array(ring.length * 3), 3);
+    g.setAttribute('position', pos);
+  }
+  ring.forEach((p, i) => pos!.setXYZ(i, p.x, p.y, p.z));
+  pos.needsUpdate = true;
 }
 
 /** Flat chevron (^) in the XY plane pointing along +Y, for ramp edit arrows. */
@@ -351,6 +370,8 @@ export class BuildView {
   // Edit grid
   private editGroup = new Group();
   private editTiles: Mesh[] = [];
+  private editEdges: LineLoop[] = [];
+  private edgeMat = new LineBasicMaterial({ color: 0xe8f8ff, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
   private tileOn: MeshBasicMaterial;
   private tileOff: MeshBasicMaterial;
   private tileHover: MeshBasicMaterial;
@@ -436,7 +457,18 @@ export class BuildView {
       } else v.mesh.position.copy(cellOrigin(p.grid));
       const hp = p.health / p.maxHealth;
       const c = v.material.color;
-      if (p.progress < 1) {
+      // Phased ("yellow") builds: see-through until the player leaves them.
+      if (v.material.transparent !== p.phased) {
+        v.material.transparent = p.phased;
+        v.material.opacity = p.phased ? 0.5 : 1;
+        v.material.depthWrite = !p.phased;
+        v.material.needsUpdate = true;
+        v.mesh.castShadow = this.shadows && !p.phased;
+      }
+      if (p.phased) {
+        c.setRGB(1, 0.86, 0.3);
+        v.material.emissive.setRGB(0.35, 0.27, 0.02);
+      } else if (p.progress < 1) {
         // Constructing: blueprint tint that fades in to the material.
         c.setRGB(0.55 + 0.45 * p.progress, 0.8 + 0.2 * p.progress, 1);
         v.material.emissive.setRGB(0.05 * (1 - p.progress), 0.2 * (1 - p.progress), 0.3 * (1 - p.progress));
@@ -498,10 +530,22 @@ export class BuildView {
       const t = tiles[i];
       if (!t || t.hidden) {
         m.visible = false;
+        if (this.editEdges[i]) this.editEdges[i].visible = false;
         return;
       }
       m.visible = true;
       setTileGeometry(m.geometry, t);
+      // Fortnite-style bright outline around each tile.
+      let edge = this.editEdges[i];
+      if (!edge) {
+        edge = new LineLoop(new BufferGeometry(), this.edgeMat);
+        edge.renderOrder = 8;
+        edge.frustumCulled = false;
+        this.editEdges[i] = edge;
+        this.editGroup.add(edge);
+      }
+      edge.visible = true;
+      setTileOutline(edge.geometry, t);
       const gray = t.gray ?? selected.has(i);
       m.material = gray ? (i === hover ? this.tileHover : this.tileOff) : i === hover ? this.tileOnHover : this.tileOn;
       if (t.arrow) {
@@ -540,6 +584,8 @@ export class BuildView {
     this.tileHover.dispose();
     this.tileOnHover.dispose();
     for (const m of this.editTiles) m.geometry.dispose();
+    for (const e of this.editEdges) e.geometry.dispose();
+    this.edgeMat.dispose();
     this.arrowGeo.dispose();
     this.arrowMat.dispose();
     this.group.removeFromParent();

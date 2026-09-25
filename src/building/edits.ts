@@ -101,7 +101,6 @@ export const WALL_PRESETS = {
   largeOpening: W([0, 1, 2, 3, 4, 5]),
   leftOpening: W([0, 3]),
   rightOpening: W([2, 5]),
-  horizontalOpening: W([3, 4, 5]),
 } as const;
 
 export const FLOOR_PRESETS = {
@@ -143,8 +142,12 @@ export function selectionToEdit(type: BuildPieceType, currentMask: number, selec
   if (type === 'ramp') return rampEditFromPath(path);
   let mask = fullMask(type);
   for (const i of selected) mask &= ~(1 << i);
-  // Selecting tiles removes them from the full piece. At least one tile must remain.
+  // Selecting tiles removes them from the full piece. At least one tile must
+  // remain, and (like Fortnite) walls and floors cannot be split into
+  // disconnected pieces — such an edit is rejected.
   if (mask === 0) return null;
+  if (type === 'wall' && !connected(mask, 3)) return null;
+  if (type === 'floor' && !connected(mask, 2)) return null;
   void currentMask;
   return { mask };
 }
@@ -156,4 +159,29 @@ export function removedTiles(type: BuildPieceType, mask: number): Set<number> {
   if (type === 'ramp') return s;
   for (let i = 0; i < n; i++) if (!(mask & (1 << i))) s.add(i);
   return s;
+}
+
+/** Whether the set tiles of an n x n mask form one 4-connected piece. */
+function connected(mask: number, n: number): boolean {
+  const cells = [];
+  for (let i = 0; i < n * n; i++) if (mask & (1 << i)) cells.push(i);
+  if (cells.length === 0) return false;
+  const seen = new Set([cells[0]]);
+  const stack = [cells[0]];
+  while (stack.length) {
+    const i = stack.pop()!;
+    const r = Math.floor(i / n);
+    const c = i % n;
+    for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const rr = r + dr;
+      const cc = c + dc;
+      if (rr < 0 || cc < 0 || rr >= n || cc >= n) continue;
+      const j = rr * n + cc;
+      if (mask & (1 << j) && !seen.has(j)) {
+        seen.add(j);
+        stack.push(j);
+      }
+    }
+  }
+  return seen.size === cells.length;
 }

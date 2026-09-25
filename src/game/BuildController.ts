@@ -1,7 +1,7 @@
 import { Vector3 } from 'three';
 import { SLAB, TILE, TILE_H } from '../core/constants';
 import { computeBuildTarget, type BuildTarget } from '../building/targeting';
-import { CONE_HEIGHT, DIR_VECTORS, FULL_QUAD_MASK, RAMP_SPIRAL, coneLocalHeight, rampSurfaceHeight } from '../building/grid';
+import { DIR_VECTORS, FULL_QUAD_MASK, RAMP_SPIRAL, rampSurfaceHeight } from '../building/grid';
 import { rampCellActive, rampCellRange, removedTiles, selectionToEdit, tileAt } from '../building/edits';
 import { raySurface } from '../physics/collision';
 import type { EditTile } from '../rendering/BuildView';
@@ -134,10 +134,10 @@ export class BuildController {
     const g = piece.grid;
     let t: number;
     const col = piece.colliders[0];
-    if ((piece.type === 'ramp' || piece.type === 'cone') && col && col.kind === 'surface') {
+    if (piece.type === 'ramp' && col && col.kind === 'surface') {
       // Hit the slope the grid is drawn on so the hovered tile is the one under
       // the crosshair (for a cut-down ramp that is the full ramp's slope).
-      const surface = piece.type === 'ramp' ? { ...col, height: (x: number, z: number) => rampDisplayHeight(piece, x, z) } : col;
+      const surface = { ...col, height: (x: number, z: number) => rampDisplayHeight(piece, x, z) };
       const st = raySurface(ray.origin, ray.dir, surface, 40, new Vector3());
       if (st >= 0) {
         const hp = ray.origin.clone().addScaledVector(ray.dir, st);
@@ -148,7 +148,8 @@ export class BuildController {
       if ((piece.rotation & 1) === 0) t = (g.x * TILE - ray.origin.x) / ray.dir.x;
       else t = (g.z * TILE - ray.origin.z) / ray.dir.z;
     } else {
-      const y = g.y * TILE_H + (piece.type === 'ramp' ? TILE_H / 2 : piece.type === 'cone' ? CONE_HEIGHT / 2 : 0);
+      // Floors and cones: the flat grid plane at the piece's base.
+      const y = g.y * TILE_H + (piece.type === 'ramp' ? TILE_H / 2 : 0);
       t = (y - ray.origin.y) / ray.dir.y;
     }
     if (!Number.isFinite(t) || t < 0) return -1;
@@ -214,7 +215,7 @@ export class BuildController {
     if (!piece) return;
     const result = selectionToEdit(piece.type, piece.editMask, e.selection, e.path);
     if (!result) {
-      if (e.changed) this.notice?.(piece.type === 'ramp' ? 'Drag across the ramp in the direction it should rise' : 'At least one tile must remain');
+      if (e.changed) this.notice?.(piece.type === 'ramp' ? 'Drag across the ramp in the direction it should rise' : "That edit isn't possible");
       return;
     }
     if (result.mask === piece.editMask && (piece.type !== 'ramp' || result.rampDir === piece.rampDir)) return;
@@ -343,15 +344,14 @@ export function editTiles(piece: BuildPiece, viewer: Vector3, path: number[] | n
     return out;
   }
   if (piece.type === 'ramp') return rampEditTiles(piece, viewer, path);
-  const surf =
-    piece.type === 'cone'
-      ? heightSurface(x0, z0, viewer, (u, v) => y0 + coneLocalHeight(piece.editMask, u, v), 0.1)
-      : heightSurface(x0, z0, viewer, () => y0 + SLAB / 2, SLAB);
+  // Floors: on the slab. Cones: like Fortnite, a flat 2x2 grid flush with
+  // the cone's base (whatever shape the cone is edited into).
+  const surf = piece.type === 'cone' ? heightSurface(x0, z0, viewer, () => y0, 0) : heightSurface(x0, z0, viewer, () => y0 + SLAB / 2, SLAB);
   const h = TILE / 2;
   for (let q = 0; q < 4; q++) {
     const u = (q & 1) * h;
     const v = (q >> 1) * h;
-    out.push(drapeTile(surf, u, u + h, v, v + h, viewer, piece.type === 'cone' ? 8 : 1));
+    out.push(drapeTile(surf, u, u + h, v, v + h, viewer, 1));
   }
   return out;
 }
