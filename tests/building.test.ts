@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import { flatWorld, targetFrom } from './helpers';
 import { TILE, TILE_H } from '../src/core/constants';
-import { pieceBounds, FULL_WALL_MASK, RAMP_SPIRAL, rampSurfaceHeight, wallBoxes, wallTriangleCorner } from '../src/building/grid';
+import { coneHeight, pieceBounds, FULL_WALL_MASK, RAMP_SPIRAL, rampSurfaceHeight, wallBoxes, wallTriangleCorner } from '../src/building/grid';
 import { WALL_PRESETS, FLOOR_PRESETS, selectionToEdit } from '../src/building/edits';
 import { makeTarget, computeBuildTarget } from '../src/building/targeting';
 import { moveCharacter } from '../src/physics/character';
@@ -18,14 +18,18 @@ describe('build targeting (crosshair → grid)', () => {
     expect(a).toEqual(b);
   });
 
-  it('floor goes in the cell under the crosshair and moves exactly one cell per cell of aim', () => {
+  it('floor goes in the cell under the crosshair, never further than the neighbouring cell', () => {
     const { world, builds } = flatWorld();
     const pos = new Vector3(2, 0, 2);
-    // Looking straight down -Z at ground points z = 2 - d.
+    // Looking down -Z at ground points z = 2 - d.
     const t1 = targetFrom(world, builds, pos, 0, pitchFor(3), 'floor'); // hits z = -1 → cell -1
-    const t2 = targetFrom(world, builds, pos, 0, pitchFor(3 + TILE), 'floor'); // hits z = -5 → cell -2
+    const t2 = targetFrom(world, builds, pos, 0, pitchFor(3 + TILE), 'floor'); // far away → still the next cell
+    const under = targetFrom(world, builds, pos, 0, -1.5, 'floor'); // straight down → own cell
     expect(t1.grid).toEqual({ x: 0, y: 0, z: -1 });
-    expect(t2.grid).toEqual({ x: 0, y: 0, z: -2 });
+    expect(t2.grid).toEqual({ x: 0, y: 0, z: -1 });
+    expect(under.grid).toEqual({ x: 0, y: 0, z: 0 });
+    // Looking up builds the floor above (a roof), not one far away.
+    expect(targetFrom(world, builds, pos, 0, 0.8, 'floor').grid.y).toBe(1);
   });
 
   it('wall goes on the nearest grid line in front of the player, wherever the crosshair lands', () => {
@@ -116,7 +120,7 @@ describe('build targeting (crosshair → grid)', () => {
     // The cone surface peaks in the cell centre.
     const c = placedCone.colliders[0];
     expect(c.kind).toBe('surface');
-    if (c.kind === 'surface') expect(c.height(2, -2)).toBeCloseTo(TILE_H + TILE_H * 0.5);
+    if (c.kind === 'surface') expect(c.height(TILE / 2, -TILE / 2)).toBeCloseTo(TILE_H + TILE_H * 0.5);
     void world;
   });
 
@@ -168,24 +172,24 @@ describe('editing', () => {
     const { world, builds, actor } = flatWorld();
     const wall = builds.place(makeTarget('wall', { x: 0, y: 0, z: -1 }, 1), actor)!;
     builds.applyEdit(wall.id, actor, WALL_PRESETS.door);
-    // The wall lies on the plane z = -4; walk from z = -2 toward -Z through the door.
-    const body = { pos: new Vector3(2, 0, -2), vel: new Vector3(0, 0, -6), radius: 0.38, height: 1.8, grounded: true };
+    // The wall lies on the plane z = -TILE; walk from z = -2 toward -Z through the door.
+    const body = { pos: new Vector3(TILE / 2, 0, -2), vel: new Vector3(0, 0, -6), radius: 0.38, height: 1.8, grounded: true };
     for (let i = 0; i < 60; i++) {
       body.vel.set(0, 0, -6);
       moveCharacter(world, body, 1 / 60);
     }
-    expect(body.pos.z).toBeLessThan(-5);
+    expect(body.pos.z).toBeLessThan(-TILE - 1);
   });
 
   it('solid wall blocks a character', () => {
     const { world, builds, actor } = flatWorld();
     builds.place(makeTarget('wall', { x: 0, y: 0, z: -1 }, 1), actor);
-    const body = { pos: new Vector3(2, 0, -2), vel: new Vector3(0, 0, -6), radius: 0.38, height: 1.8, grounded: true };
+    const body = { pos: new Vector3(TILE / 2, 0, -2), vel: new Vector3(0, 0, -6), radius: 0.38, height: 1.8, grounded: true };
     for (let i = 0; i < 60; i++) {
       body.vel.set(0, 0, -6);
       moveCharacter(world, body, 1 / 60);
     }
-    expect(body.pos.z).toBeGreaterThan(-4 + 0.3);
+    expect(body.pos.z).toBeGreaterThan(-TILE + 0.3);
   });
 
   it('selection → edit mask conversion (edit on release) and ramp direction edits', () => {
@@ -213,17 +217,35 @@ describe('editing', () => {
     expect(builds.applyEdit(piece.id, actor, 0b0101, 1)).toBe(false);
     expect(builds.applyEdit(piece.id, actor, 0b0101, 0)).toBe(true);
     expect(builds.isEdited(piece)).toBe(true);
-    expect(rampSurfaceHeight(g, 0, 0b0101, 3, -2)).toBeNull(); // +X half cut away
-    expect(rampSurfaceHeight(g, 0, 0b0101, 1, -2)).toBeCloseTo(TILE_H / 2);
+    expect(rampSurfaceHeight(g, 0, 0b0101, TILE * 0.75, -TILE / 2)).toBeNull(); // +X half cut away
+    expect(rampSurfaceHeight(g, 0, 0b0101, TILE * 0.25, -TILE / 2)).toBeCloseTo(TILE_H / 2);
     // Spiral: -X flight rises toward -Z to mid height, +X flight climbs back to the top.
     const sp = RAMP_SPIRAL | 0b0101;
-    expect(rampSurfaceHeight(g, 0, sp, 1, -4 + 0.01)).toBeCloseTo(TILE_H / 2, 1);
-    expect(rampSurfaceHeight(g, 0, sp, 3, -4 + 0.01)).toBeCloseTo(TILE_H / 2, 1);
-    expect(rampSurfaceHeight(g, 0, sp, 3, -0.01)).toBeCloseTo(TILE_H, 1);
-    expect(rampSurfaceHeight(g, 0, sp, 1, -0.01)).toBeCloseTo(0, 1);
+    expect(rampSurfaceHeight(g, 0, sp, TILE * 0.25, -TILE + 0.01)).toBeCloseTo(TILE_H / 2, 1);
+    expect(rampSurfaceHeight(g, 0, sp, TILE * 0.75, -TILE + 0.01)).toBeCloseTo(TILE_H / 2, 1);
+    expect(rampSurfaceHeight(g, 0, sp, TILE * 0.75, -0.01)).toBeCloseTo(TILE_H, 1);
+    expect(rampSurfaceHeight(g, 0, sp, TILE * 0.25, -0.01)).toBeCloseTo(0, 1);
     expect(builds.applyEdit(piece.id, actor, sp, 0)).toBe(true);
     builds.resetEdit(piece.id, actor);
     expect(builds.isEdited(piece)).toBe(false);
+  });
+
+  it('cone edits lift corners open instead of cutting the cone', () => {
+    const g = { x: 0, y: 0, z: 0 };
+    const peak = TILE_H * 0.5;
+    // Full cone: pyramid, corners on the floor, centre at the peak.
+    expect(coneHeight(g, 0xf, 0.01, 0.01)).toBeCloseTo(0, 1);
+    expect(coneHeight(g, 0xf, TILE / 2, TILE / 2)).toBeCloseTo(peak);
+    // One tile (quadrant 0) edited: that corner rises to the peak, the others stay down.
+    const one = 0xf & ~1;
+    expect(coneHeight(g, one, 0.01, 0.01)).toBeCloseTo(peak, 1);
+    expect(coneHeight(g, one, TILE - 0.01, TILE - 0.01)).toBeCloseTo(0, 1);
+    // Still solid everywhere — nothing is removed.
+    for (const [x, z] of [[0.5, 0.5], [TILE - 0.5, 0.5], [0.5, TILE - 0.5]]) expect(coneHeight(g, one, x, z)).not.toBeNull();
+    // Two tiles on one side: that whole edge is up.
+    const side = 0xf & ~0b0011;
+    expect(coneHeight(g, side, TILE / 2, 0.01)).toBeCloseTo(peak, 1);
+    expect(coneHeight(g, side, TILE / 2, TILE - 0.01)).toBeCloseTo(0, 1);
   });
 
   it('removing a corner L of wall tiles cuts the wall diagonally', () => {
@@ -289,6 +311,21 @@ describe('destruction & support', () => {
     expect(builds.pieces.has(floor2.id)).toBe(true);
   });
 
+  it('a ramp built on top of a player lifts them onto it instead of trapping them', () => {
+    const { world, builds, actor } = flatWorld();
+    Object.assign(actor.pos, { x: TILE / 2, y: 0, z: -TILE / 2 });
+    builds.place(makeTarget('ramp', { x: 0, y: 0, z: -1 }, 0), actor);
+    const body = { pos: new Vector3(TILE / 2, 0, -TILE / 2), vel: new Vector3(), radius: 0.38, height: 1.8, grounded: true };
+    moveCharacter(world, body, 1 / 60);
+    expect(body.pos.y).toBeCloseTo(TILE_H / 2, 1);
+    // And they can walk on up it.
+    for (let i = 0; i < 40; i++) {
+      body.vel.set(0, body.vel.y - 24 / 60, -5);
+      moveCharacter(world, body, 1 / 60);
+    }
+    expect(body.pos.y).toBeGreaterThan(TILE_H * 0.8);
+  });
+
   it('ramps are walkable', () => {
     const { world, builds, actor } = flatWorld();
     builds.place(makeTarget('ramp', { x: 0, y: 0, z: -1 }, 0), actor);
@@ -299,7 +336,7 @@ describe('destruction & support', () => {
       body.vel.z = -6;
       body.vel.y -= 28 / 60;
       moveCharacter(world, body, 1 / 60);
-      if (body.pos.z > -4) maxY = Math.max(maxY, body.pos.y);
+      if (body.pos.z > -TILE) maxY = Math.max(maxY, body.pos.y);
     }
     // Reached (nearly) the top of the ramp while on it.
     expect(maxY).toBeGreaterThan(TILE_H * 0.8);

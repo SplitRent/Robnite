@@ -586,6 +586,7 @@ export class BotBrain {
       origin: eye,
       dir,
       eye,
+      feet: c.pos,
       piece: 'ramp',
       userRotation: 0,
       pieceInfo: (id) => {

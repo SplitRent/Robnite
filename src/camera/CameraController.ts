@@ -3,6 +3,7 @@ import { clamp, damp } from '../core/math';
 import type { CollisionWorld } from '../physics/collision';
 
 export interface CameraSettings {
+  /** Horizontal field of view in degrees, like Fortnite's (default 80). */
   fov: number;
   distance: number;
   shoulder: number;
@@ -28,7 +29,7 @@ export class CameraController {
   private shake = 0;
   private landDip = 0;
   private pivot = new Vector3();
-  settings: CameraSettings = { fov: 80, distance: 3.2, shoulder: 0.65, shake: true, reducedMotion: false };
+  settings: CameraSettings = { fov: 80, distance: 4.3, shoulder: 0.75, shake: true, reducedMotion: false };
   /** Distance override (e.g. zoomed out while skydiving). */
   distanceOverride: number | null = null;
 
@@ -56,6 +57,11 @@ export class CameraController {
     this.landDip = Math.min(0.35, speed * 0.015);
   }
 
+  /** Current ADS zoom factor (1 = hip fire, small = scoped). */
+  get zoomFactor(): number {
+    return this.zoom;
+  }
+
   /** Total aim angles including recoil. */
   get aimYaw(): number {
     return this.yaw + this.recoilYaw;
@@ -72,7 +78,7 @@ export class CameraController {
     this.recoilYaw *= rec;
     this.landDip = damp(this.landDip, 0, 10, dt);
     this.zoom = damp(this.zoom, opts.aiming ? opts.adsFov : 1, 18, dt);
-    this.fovBoost = damp(this.fovBoost, opts.sprinting && !opts.aiming && !this.settings.reducedMotion ? 6 : 0, 6, dt);
+    this.fovBoost = damp(this.fovBoost, opts.sprinting && !opts.aiming && !this.settings.reducedMotion ? 4 : 0, 6, dt);
     this.shake = Math.max(0, this.shake - dt * 3);
 
     const yaw = this.aimYaw;
@@ -89,7 +95,7 @@ export class CameraController {
     const shoulder = opts.firstPerson ? 0 : this.settings.shoulder * (opts.aiming ? 0.8 : 1);
     // Shoulder point, then back along the view direction.
     const sx = this.pivot.x + rx * shoulder;
-    const sy = this.pivot.y + 0.1;
+    const sy = this.pivot.y + 0.3;
     const sz = this.pivot.z + rz * shoulder;
     let dist = wantDist;
     if (opts.world && wantDist > 0) {
@@ -109,7 +115,9 @@ export class CameraController {
     }
     const shakeAmt = this.shake * this.shake * 0.02;
     this.camera.rotation.set(pitch + (Math.random() - 0.5) * shakeAmt, yaw + (Math.random() - 0.5) * shakeAmt, 0, 'YXZ');
-    const fov = this.settings.fov * this.zoom + this.fovBoost;
+    // Fortnite's FOV is horizontal; three.js wants vertical for the current aspect.
+    const hfov = Math.min(170, this.settings.fov * this.zoom + this.fovBoost);
+    const fov = (2 * Math.atan(Math.tan((hfov * Math.PI) / 360) / this.camera.aspect) * 180) / Math.PI;
     if (Math.abs(this.camera.fov - fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();

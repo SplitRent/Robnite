@@ -1,5 +1,5 @@
 import { Vector3 } from 'three';
-import { BUILD_RANGE, TILE, TILE_H } from '../core/constants';
+import { TILE, TILE_H } from '../core/constants';
 import type { CollisionWorld, RayHit } from '../physics/collision';
 import { faceLabel, lookDirIndex, slotKey, type BuildPieceType, type GridCoordinate, type Vec3Like } from './grid';
 
@@ -39,8 +39,10 @@ export interface TargetInput {
   pieceInfo?: (pieceId: number) => { type: BuildPieceType; grid: GridCoordinate; rotation: number } | null;
 }
 
-/** Distance ahead of the player used when the crosshair hits nothing. */
-export const AIR_TARGET_DISTANCE = TILE * 1.25;
+/** How far from the eye the build aim point can reach (about one tile out). */
+export const BUILD_REACH = TILE * 1.4;
+/** @deprecated kept for callers; equals BUILD_REACH. */
+export const AIR_TARGET_DISTANCE = BUILD_REACH;
 /** A wall line closer than this to the player is skipped (it would go through them). */
 const WALL_MIN_GAP = 0.45;
 
@@ -61,7 +63,10 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
   const toEye = (input.eye.x - o.x) * d.x + (input.eye.y - o.y) * d.y + (input.eye.z - o.z) * d.z;
   const t0 = Math.max(0, toEye - 0.25);
   const start = new Vector3().copy(o).addScaledVector(d, t0);
-  const hit: RayHit | null = world.raycast(start, d, BUILD_RANGE + 2);
+  // Like Fortnite, pieces are placed around the player, not wherever the
+  // crosshair lands: the aim point is capped to a short reach from the eye.
+  const reach = Math.max(0, toEye - t0) + BUILD_REACH;
+  const hit: RayHit | null = world.raycast(start, d, reach);
 
   let p: Vector3;
   let normal: Vector3;
@@ -71,8 +76,7 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
     normal = hit.normal;
   } else {
     air = true;
-    const airDist = Math.max(0, toEye - t0) + AIR_TARGET_DISTANCE;
-    p = start.clone().addScaledVector(d, airDist);
+    p = start.clone().addScaledVector(d, reach);
     normal = d.clone().negate();
   }
   // Q: a point just in front of the hit surface, on the viewer's side.
@@ -80,12 +84,19 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
 
   const look = lookDirIndex(d.x, d.z);
   const piece = input.piece;
+  const feet = input.feet ?? { x: input.eye.x, y: input.eye.y - 1.6, z: input.eye.z };
+  const feetLevel = Math.floor((feet.y + 0.1) / TILE_H);
+  const pcx = Math.floor(feet.x / TILE);
+  const pcz = Math.floor(feet.z / TILE);
+  // Floors, ramps and cones go in the player's cell or a neighbouring one.
+  const near = (v: number, c: number) => Math.max(c - 1, Math.min(c + 1, v));
+  const clampLevel = (y: number) => Math.max(feetLevel - 1, Math.min(feetLevel + 1, y));
   let grid: GridCoordinate;
   let rotation = 0;
 
   switch (piece) {
     case 'floor': {
-      grid = { x: Math.floor(q.x / TILE), y: Math.round(q.y / TILE_H), z: Math.floor(q.z / TILE) };
+      grid = { x: near(Math.floor(q.x / TILE), pcx), y: clampLevel(Math.round(q.y / TILE_H)), z: near(Math.floor(q.z / TILE), pcz) };
       const ground = world.terrainHeight((grid.x + 0.5) * TILE, (grid.z + 0.5) * TILE);
       if (ground > grid.y * TILE_H + 0.35) grid.y += 1;
       break;
@@ -93,7 +104,6 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
     case 'wall': {
       // Like Fortnite: the wall goes on the nearest grid line in front of the
       // player (not where the crosshair lands); pitch picks the level.
-      const feet = input.feet ?? { x: input.eye.x, y: input.eye.y - 1.6, z: input.eye.z };
       const alongX = look === 1 || look === 3;
       rotation = ((alongX ? 0 : 1) + input.userRotation) & 1;
       const cellX = Math.floor(feet.x / TILE);
@@ -107,7 +117,6 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
         ? { x: lineAhead(feet.x, cellX, d.x > 0), y: 0, z: cellZ }
         : { x: cellX, y: 0, z: lineAhead(feet.z, cellZ, d.z > 0) };
       // Level: where the crosshair ray crosses the wall plane, within one level of the feet.
-      const feetLevel = Math.floor((feet.y + 0.1) / TILE_H);
       const plane = rotation === 0 ? grid.x * TILE : grid.z * TILE;
       const oa = rotation === 0 ? o.x : o.z;
       const da = rotation === 0 ? d.x : d.z;
@@ -123,7 +132,7 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
       break;
     }
     case 'ramp': {
-      grid = { x: Math.floor(q.x / TILE), y: Math.floor((q.y + 0.05) / TILE_H), z: Math.floor(q.z / TILE) };
+      grid = { x: near(Math.floor(q.x / TILE), pcx), y: clampLevel(Math.floor((q.y + 0.05) / TILE_H)), z: near(Math.floor(q.z / TILE), pcz) };
       rotation = (look + input.userRotation) & 3;
       // Aiming at the surface of an existing ramp that rises the same way:
       // continue the ramp chain one cell forward and one level up.
@@ -139,7 +148,7 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
       break;
     }
     case 'cone': {
-      grid = { x: Math.floor(q.x / TILE), y: Math.round(q.y / TILE_H), z: Math.floor(q.z / TILE) };
+      grid = { x: near(Math.floor(q.x / TILE), pcx), y: clampLevel(Math.round(q.y / TILE_H)), z: near(Math.floor(q.z / TILE), pcz) };
       rotation = (look + input.userRotation) & 3;
       const ground = world.terrainHeight((grid.x + 0.5) * TILE, (grid.z + 0.5) * TILE);
       if (ground > grid.y * TILE_H + 0.35) grid.y += 1;

@@ -809,7 +809,7 @@ export class GameClient {
         stormActive: !!storm && m.phase !== 'WARMUP' && m.phase !== 'DEPLOYMENT',
         fps: this.fps,
         spread,
-        scoped: this.camera.camera.fov < this.settings.video.fov * 0.5,
+        scoped: this.camera.zoomFactor < 0.5,
         aiming: h.input.aim,
         player: { x: (specTarget ?? h).pos.x, z: (specTarget ?? h).pos.z, yaw: this.camera.yaw },
         roundText,

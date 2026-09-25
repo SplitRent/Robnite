@@ -11,12 +11,11 @@ import {
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
-  PlaneGeometry,
   Vector3,
 } from 'three';
 import { SLAB, TILE, TILE_H } from '../core/constants';
 import type { BuildPiece } from '../building/BuildSystem';
-import { CONE_HEIGHT, FULL_QUAD_MASK, FULL_WALL_MASK, RAMP_SPIRAL, wallTriangleCorner, type BuildMaterial, type BuildPieceType } from '../building/grid';
+import { CONE_HEIGHT, FULL_QUAD_MASK, FULL_WALL_MASK, RAMP_SPIRAL, coneCornerHeights, wallTriangleCorner, type BuildMaterial, type BuildPieceType } from '../building/grid';
 import type { BuildTarget } from '../building/targeting';
 import { mergeAll, slabGeometry } from './geometry';
 import { buildTexture } from './textures';
@@ -100,19 +99,54 @@ function rampGeometry(dir: number, mask: number): BufferGeometry {
     const zs = [quads & 0b0011 ? 0 : T / 2, quads & 0b1100 ? T : T / 2];
     return [xs[0], xs[1], zs[0], zs[1]];
   };
+  // One flight of stairs over the rectangle, rising toward d from `base` by
+  // `rise` across the full cell. Like Fortnite's ramps it looks like steps
+  // (with a solid sloped underside) while collision stays a smooth slope.
+  const STEPS = 8;
+  const flight = (xa: number, xb: number, za: number, zb: number, d: number, base: number, rise: number): BufferGeometry[] => {
+    const parts: BufferGeometry[] = [];
+    const stepRise = rise / STEPS;
+    parts.push(slab(xa, xb, za, zb, (x, z) => base + prog(d, x, z) * rise - stepRise * 0.55));
+    const alongX = (d & 1) === 1;
+    for (let i = 0; i < STEPS; i++) {
+      const t0 = i / STEPS;
+      const t1 = (i + 1) / STEPS;
+      // Interval of this step along the rising axis, in local coordinates.
+      let a0: number;
+      let a1: number;
+      if (d === 1 || d === 2) [a0, a1] = [t0 * T, t1 * T];
+      else [a0, a1] = [T - t1 * T, T - t0 * T];
+      const lo = alongX ? Math.max(a0, xa) : Math.max(a0, za);
+      const hi = alongX ? Math.min(a1, xb) : Math.min(a1, zb);
+      if (hi - lo < 0.01) continue;
+      const top = base + t1 * rise - stepRise * 0.25;
+      const bottom = Math.max(base - 0.05, top - stepRise * 1.6);
+      const g = new BoxGeometry(1, 1, 1).toNonIndexed();
+      if (alongX) {
+        g.scale(hi - lo, top - bottom, zb - za);
+        g.translate((lo + hi) / 2, (top + bottom) / 2, (za + zb) / 2);
+      } else {
+        g.scale(xb - xa, top - bottom, hi - lo);
+        g.translate((xa + xb) / 2, (top + bottom) / 2, (lo + hi) / 2);
+      }
+      scaleUV(g, 1);
+      parts.push(g);
+    }
+    return parts;
+  };
   const quads = mask & FULL_QUAD_MASK;
+  let parts: BufferGeometry[];
   if (mask & RAMP_SPIRAL) {
     const [ax, bx, az, bz] = halfRect(quads);
     const [cx, dx, cz, dz] = halfRect(FULL_QUAD_MASK & ~quads);
-    const first = slab(ax, bx, az, bz, (x, z) => prog(dir, x, z) * H * 0.5);
-    const second = slab(cx, dx, cz, dz, (x, z) => H * 0.5 + prog(dir + 2, x, z) * H * 0.5);
-    return mergeAll([first, second].map(withWhite))!;
-  }
-  if (quads !== FULL_QUAD_MASK) {
+    parts = [...flight(ax, bx, az, bz, dir & 3, 0, H * 0.5), ...flight(cx, dx, cz, dz, (dir + 2) & 3, H * 0.5, H * 0.5)];
+  } else if (quads !== FULL_QUAD_MASK) {
     const [ax, bx, az, bz] = halfRect(quads);
-    return withWhite(slab(ax, bx, az, bz, (x, z) => prog(dir, x, z) * H));
+    parts = flight(ax, bx, az, bz, dir & 3, 0, H);
+  } else {
+    parts = flight(0, T, 0, T, dir & 3, 0, H);
   }
-  return withWhite(slab(0, T, 0, T, (x, z) => prog(dir, x, z) * H));
+  return mergeAll(parts.map(withWhite))!;
 }
 
 /** Triangle-cut wall (see wallTriangleCorner): a diagonal prism. */
@@ -152,29 +186,35 @@ function triangleWallGeometry(rotation: number, corner: number): BufferGeometry 
 }
 
 function coneGeometry(mask: number): BufferGeometry {
+  // Four faces (centre + edge). Edited tiles lift their corner to the peak.
   const T = TILE;
+  const h = coneCornerHeights(mask);
+  const corner = (q: number) => new Vector3((q & 1) * T, h[q], (q >> 1) * T);
   const c = new Vector3(T / 2, CONE_HEIGHT, T / 2);
   const P: number[] = [];
+  const thick = 0.1;
+  const up = new Vector3();
   const tri = (a: Vector3, b: Vector3, d: Vector3) => {
+    // Top faces point up; the underside sits a little lower, facing down.
+    up.subVectors(b, a).cross(new Vector3().subVectors(d, a));
+    if (up.y < 0) [b, d] = [d, b];
     P.push(a.x, a.y, a.z, b.x, b.y, b.z, d.x, d.y, d.z);
-    P.push(a.x, a.y - 0.08, a.z, d.x, d.y - 0.08, d.z, b.x, b.y - 0.08, b.z);
+    P.push(a.x, a.y - thick, a.z, d.x, d.y - thick, d.z, b.x, b.y - thick, b.z);
   };
-  for (let q = 0; q < 4; q++) {
-    if (!(mask & (1 << q))) continue;
-    const ix = q & 1;
-    const iz = q >> 1;
-    const corner = new Vector3(ix * T, 0, iz * T);
-    const ex = new Vector3(ix * T, 0, T / 2); // edge midpoint on the x-side
-    const ez = new Vector3(T / 2, 0, iz * T);
-    // Orient so triangles face upward.
-    const flip = (ix + iz) % 2 === 1;
-    if (!flip) {
-      tri(c, corner, ex);
-      tri(c, ez, corner);
-    } else {
-      tri(c, ex, corner);
-      tri(c, corner, ez);
-    }
+  const edges: [number, number][] = [
+    [0, 1],
+    [1, 3],
+    [3, 2],
+    [2, 0],
+  ];
+  for (const [qa, qb] of edges) {
+    const a = corner(qa);
+    const b = corner(qb);
+    tri(c, a, b);
+    // Rim between top and underside along the outer edge.
+    const a2 = a.clone().setY(a.y - thick);
+    const b2 = b.clone().setY(b.y - thick);
+    P.push(a.x, a.y, a.z, b.x, b.y, b.z, b2.x, b2.y, b2.z, a.x, a.y, a.z, b2.x, b2.y, b2.z, a2.x, a2.y, a2.z);
   }
   const g = new BufferGeometry();
   g.setAttribute('position', new Float32BufferAttribute(P, 3));
@@ -201,6 +241,27 @@ function remapUV(g: BufferGeometry, _rotation: number, col: number, row: number,
 function scaleUV(g: BufferGeometry, s: number): void {
   const uv = g.getAttribute('uv');
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * s, uv.getY(i) * s);
+}
+
+/** Write a draped tile's points into a (reused) geometry. */
+function setTileGeometry(g: BufferGeometry, t: EditTile): void {
+  const count = (t.n + 1) * (t.n + 1);
+  let pos = g.getAttribute('position') as Float32BufferAttribute | undefined;
+  if (!pos || pos.count !== count) {
+    pos = new Float32BufferAttribute(new Float32Array(count * 3), 3);
+    g.setAttribute('position', pos);
+    const idx: number[] = [];
+    for (let r = 0; r < t.n; r++) {
+      for (let c = 0; c < t.n; c++) {
+        const a = r * (t.n + 1) + c;
+        idx.push(a, a + 1, a + t.n + 1, a + 1, a + t.n + 2, a + t.n + 1);
+      }
+    }
+    g.setIndex(idx);
+  }
+  t.points.forEach((p, i) => pos!.setXYZ(i, p.x, p.y, p.z));
+  pos.needsUpdate = true;
+  g.computeBoundingSphere();
 }
 
 /** Flat chevron (^) in the XY plane pointing along +Y, for ramp edit arrows. */
@@ -255,13 +316,16 @@ interface PieceVisual {
   born: number;
 }
 
+/**
+ * One edit tile, draped over the piece: a (n+1)x(n+1) grid of world points
+ * (row-major) that follows the piece surface, lifted slightly toward the viewer.
+ */
 export interface EditTile {
+  points: Vector3[];
+  n: number;
   center: Vector3;
-  axisX: Vector3;
-  axisY: Vector3;
+  /** Surface normal at the centre, facing the viewer. */
   normal: Vector3;
-  width: number;
-  height: number;
   /** Not a tile (the hole in the middle of the ramp grid). */
   hidden?: boolean;
   /** Force gray (true) / blue (false); by default selected tiles are gray. */
@@ -291,7 +355,6 @@ export class BuildView {
   private tileOff: MeshBasicMaterial;
   private tileHover: MeshBasicMaterial;
   private tileOnHover: MeshBasicMaterial;
-  private tileGeoUnit: PlaneGeometry;
   private arrows: Mesh[] = [];
   private arrowGeo: BufferGeometry;
   private arrowMat: MeshBasicMaterial;
@@ -318,7 +381,6 @@ export class BuildView {
     this.tileOnHover = tileMat(0x7fdcff, 0.75);
     this.tileOff = tileMat(0x8d949c, 0.6);
     this.tileHover = tileMat(0xc2c7cc, 0.7);
-    this.tileGeoUnit = new PlaneGeometry(1, 1);
     this.arrowGeo = chevronGeometry();
     this.arrowMat = new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false, depthTest: false, side: DoubleSide });
     this.editGroup.visible = false;
@@ -424,8 +486,9 @@ export class BuildView {
     }
     this.editGroup.visible = true;
     while (this.editTiles.length < tiles.length) {
-      const m = new Mesh(this.tileGeoUnit, this.tileOn);
+      const m = new Mesh(new BufferGeometry(), this.tileOn);
       m.renderOrder = 7;
+      m.frustumCulled = false;
       this.editTiles.push(m);
       this.editGroup.add(m);
     }
@@ -438,10 +501,7 @@ export class BuildView {
         return;
       }
       m.visible = true;
-      basis.makeBasis(t.axisX, t.axisY, t.normal);
-      m.quaternion.setFromRotationMatrix(basis);
-      m.position.copy(t.center).addScaledVector(t.normal, 0.08);
-      m.scale.set(t.width - 0.1, t.height - 0.1, 1);
+      setTileGeometry(m.geometry, t);
       const gray = t.gray ?? selected.has(i);
       m.material = gray ? (i === hover ? this.tileHover : this.tileOff) : i === hover ? this.tileOnHover : this.tileOn;
       if (t.arrow) {
@@ -457,7 +517,7 @@ export class BuildView {
         const ay = t.arrow.clone().addScaledVector(t.normal, -t.arrow.dot(t.normal)).normalize();
         const ax = new Vector3().crossVectors(ay, t.normal);
         a.quaternion.setFromRotationMatrix(basis.makeBasis(ax, ay, t.normal));
-        a.position.copy(t.center).addScaledVector(t.normal, 0.1);
+        a.position.copy(t.center).addScaledVector(t.normal, 0.03);
         arrowCount++;
       }
     });
@@ -479,7 +539,7 @@ export class BuildView {
     this.tileOff.dispose();
     this.tileHover.dispose();
     this.tileOnHover.dispose();
-    this.tileGeoUnit.dispose();
+    for (const m of this.editTiles) m.geometry.dispose();
     this.arrowGeo.dispose();
     this.arrowMat.dispose();
     this.group.removeFromParent();

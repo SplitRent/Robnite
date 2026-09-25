@@ -1,5 +1,5 @@
 import { Vector3 } from 'three';
-import { STEP_HEIGHT } from '../core/constants';
+import { SLAB, STEP_HEIGHT, TILE_H } from '../core/constants';
 import { makeAABB, type Collider, type CollisionWorld } from './collision';
 
 export interface CharacterBody {
@@ -61,6 +61,7 @@ export function moveCharacter(world: CollisionWorld, body: CharacterBody, dt: nu
   const dx = vel.x * dt;
   const dy = vel.y * dt;
   const dz = vel.z * dt;
+  depenetrate(world, body);
   const steps = Math.min(16, Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) / SUBSTEP)));
   let grounded = false;
   for (let s = 0; s < steps; s++) {
@@ -184,8 +185,10 @@ function resolveVertical(world: CollisionWorld, body: CharacterBody, prevPos: Ve
         pos.y = b.minY - h;
         ceiling = true;
       } else if (pos.y < b.maxY && pos.y + h > b.minY) {
-        // Penetrating (spawned or a piece was built around us): pop out upward if shallow.
-        if (b.maxY - pos.y < 0.7) {
+        // Penetrating (a floor was built at our feet): pop out on top. Tall
+        // pieces (walls) only by a step, so you can't hop onto wall tops.
+        const slab = b.maxY - b.minY <= SLAB + 0.02;
+        if (b.maxY - pos.y < (slab ? 0.7 : STEP_HEIGHT)) {
           pos.y = b.maxY;
           landed = true;
         }
@@ -207,6 +210,29 @@ function resolveVertical(world: CollisionWorld, body: CharacterBody, prevPos: Ve
     }
   }
   return { landed, ceiling };
+}
+
+/**
+ * A ramp or cone built on top of a character leaves them inside its slope.
+ * Like Fortnite, lift them onto the surface (if there is room above) instead
+ * of trapping them in it.
+ */
+function depenetrate(world: CollisionWorld, body: CharacterBody): void {
+  const { pos, vel, radius: r, height: h } = body;
+  const list = world.query(setBodyBox(pos, r * 0.5, h), scratch).slice();
+  let lift = pos.y;
+  for (const c of list) {
+    if (c.kind !== 'surface') continue;
+    const sh = c.height(pos.x, pos.z);
+    if (sh === null) continue;
+    // Overlapping: feet below the slope while the head is above it.
+    if (pos.y < sh - 0.02 && pos.y + h > sh - 0.12 && sh - pos.y <= TILE_H + 0.1) lift = Math.max(lift, sh);
+  }
+  if (lift > pos.y && !bodyBlocked(world, new Vector3(pos.x, lift + 0.001, pos.z), r - 0.05, h)) {
+    pos.y = lift;
+    if (vel.y < 0) vel.y = 0;
+    body.grounded = true;
+  }
 }
 
 /** Highest support (box top, surface, terrain) within `maxDown` below the feet. */
