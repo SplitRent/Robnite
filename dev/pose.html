@@ -1,0 +1,38 @@
+<!doctype html>
+<html><body style="margin:0;background:#223">
+<canvas id="c" width="1600" height="900"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { CharacterModel, idleAnim } from '../src/rendering/CharacterModel.ts';
+const canvas = document.getElementById('c');
+const r = new THREE.WebGLRenderer({ canvas, antialias: true });
+const poses = (new URLSearchParams(location.search).get('poses') ?? 'ar,shotgun,pickaxe,build,consumable,run,crouch,skydive').split(',');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x6a8aaa);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2));
+const d = new THREE.DirectionalLight(0xffffff, 2); d.position.set(3, 5, 4); scene.add(d);
+const cos = { outfit: 'outfit_ridge_runner', backpack: 'backpack_utility', pickaxe: 'pickaxe_default', glider: 'glider_default', wrap: 'wrap_none', emote: 'emote_wave' };
+const views = [];
+poses.forEach((p, i) => {
+  for (let v = 0; v < 2; v++) {
+    const m = new CharacterModel(cos);
+    const a = idleAnim();
+    if (['ar', 'shotgun', 'smg', 'marksman'].includes(p)) a.held = p;
+    else if (p === 'run') { a.held = 'ar'; a.speed = 7; }
+    else if (p === 'crouch') { a.held = 'ar'; a.crouch = true; }
+    else if (p === 'skydive') a.air = 'skydive';
+    else a.held = p;
+    if (p === 'pickaxe') a.sinceSwing = 0.2;
+    if (p === 'consumable') a.usingItem = true;
+    m.update(0.3, a);
+    m.root.position.set((i - (poses.length - 1) / 2) * 1.9, v === 0 ? 2.3 : -0.4, 0);
+    // top row: side view (character faces -Z, we look from +X); bottom row: from behind-right like the game camera
+    m.root.rotation.y = v === 0 ? -Math.PI / 2 : 0.35;
+    scene.add(m.root);
+  }
+});
+const cam = new THREE.PerspectiveCamera(35, 16 / 9, 0.1, 100);
+cam.position.set(0, 1.5, 17); cam.lookAt(0, 1.1, 0);
+r.render(scene, cam);
+window.done = true;
+</script></body></html>

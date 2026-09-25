@@ -454,6 +454,12 @@ export class CharacterModel {
     return (m ?? this.handR).getWorldPosition(out);
   }
 
+  /*
+   * Pose conventions (rotation.x on a limb pivot): positive swings the limb
+   * FORWARD (toward the character's face, -Z) and up; negative swings it back.
+   * Elbows/knees: lower.rotation.x > 0 bends forward (elbow), < 0 bends back (knee).
+   * rotation.z on an arm swings it sideways: + toward +X, − toward −X.
+   */
   update(dt: number, a: AnimState): void {
     this.setHeld(a.held);
     const moving = a.speed > 0.3 && a.grounded;
@@ -478,63 +484,72 @@ export class CharacterModel {
 
     if (a.dead) {
       const t = Math.min(1, a.sinceDeath / 0.5);
-      this.body.rotation.x = t * (Math.PI / 2) * 0.95;
-      this.body.position.y = -t * 0.2;
+      this.body.rotation.x = -t * (Math.PI / 2) * 0.95;
+      this.body.position.y = t * 0.15;
       this.armL.pivot.rotation.z = -0.6 * t;
       this.armR.pivot.rotation.z = 0.6 * t;
       return;
     }
 
     if (a.air === 'skydive') {
-      this.body.rotation.x = 1.3;
+      // Belly down, head leading, arms and legs spread.
+      this.body.rotation.x = -1.35;
       this.body.position.y = 1.0;
-      this.armL.pivot.rotation.z = -1.3 + s * 0.08;
-      this.armR.pivot.rotation.z = 1.3 - s * 0.08;
-      this.legL.pivot.rotation.x = 0.3 + s * 0.1;
-      this.legR.pivot.rotation.x = 0.3 - s * 0.1;
-      this.head.rotation.x = -0.9;
+      this.armL.pivot.rotation.z = -1.2 + s * 0.08;
+      this.armR.pivot.rotation.z = 1.2 - s * 0.08;
+      this.armL.pivot.rotation.x = 0.4;
+      this.armR.pivot.rotation.x = 0.4;
+      this.legL.pivot.rotation.z = -0.25;
+      this.legR.pivot.rotation.z = 0.25;
+      this.legL.lower.rotation.x = -0.3 + s * 0.1;
+      this.legR.lower.rotation.x = -0.3 - s * 0.1;
+      this.head.rotation.x = 0.9;
       return;
     }
     if (a.air === 'glide') {
-      this.armL.pivot.rotation.set(0, 0, -2.6);
-      this.armR.pivot.rotation.set(0, 0, 2.6);
-      this.legL.pivot.rotation.x = 0.15 + s * 0.05;
-      this.legR.pivot.rotation.x = 0.05 - s * 0.05;
+      // Hanging from the glider handles.
+      this.armL.pivot.rotation.set(0, 0, -2.75);
+      this.armR.pivot.rotation.set(0, 0, 2.75);
+      this.legL.pivot.rotation.x = -0.1 + s * 0.05;
+      this.legR.pivot.rotation.x = 0.1 - s * 0.05;
+      this.legL.lower.rotation.x = -0.25;
       this.glider.rotation.z = Math.sin(this.phase * 0.5) * 0.05;
       return;
     }
 
-    // Legs
+    // ---- Legs
     if (a.sliding) {
-      this.body.rotation.x = -0.35;
+      this.body.rotation.x = 0.3;
       this.hips.position.y = 0.55;
-      this.legL.pivot.rotation.x = -1.3;
-      this.legR.pivot.rotation.x = -1.0;
-      this.legR.lower.rotation.x = 0.8;
+      this.legL.pivot.rotation.x = 1.3;
+      this.legR.pivot.rotation.x = 0.9;
+      this.legR.lower.rotation.x = -0.8;
     } else if (!a.grounded) {
-      this.legL.pivot.rotation.x = -0.6;
-      this.legL.lower.rotation.x = 0.9;
-      this.legR.pivot.rotation.x = 0.25;
-      this.legR.lower.rotation.x = 0.4;
+      this.legL.pivot.rotation.x = 0.7;
+      this.legL.lower.rotation.x = -1.0;
+      this.legR.pivot.rotation.x = -0.2;
+      this.legR.lower.rotation.x = -0.4;
     } else if (moving) {
       const amp = 0.45 + run * 0.35;
       this.legL.pivot.rotation.x = s * amp;
       this.legR.pivot.rotation.x = -s * amp;
-      this.legL.lower.rotation.x = Math.max(0, -c) * amp * 1.2;
-      this.legR.lower.rotation.x = Math.max(0, c) * amp * 1.2;
+      // Knees bend backwards, most while the leg swings through.
+      this.legL.lower.rotation.x = -Math.max(0, -c) * amp * 1.3;
+      this.legR.lower.rotation.x = -Math.max(0, c) * amp * 1.3;
       this.hips.position.y = 0.92 + Math.abs(c) * 0.05 * run;
+      this.torso.rotation.x = 0.06 * run;
       this.body.rotation.y = a.strafe * 0.35;
     }
     if (a.crouch && !a.sliding) {
       this.hips.position.y -= 0.36;
-      this.legL.pivot.rotation.x -= 0.9;
-      this.legR.pivot.rotation.x -= 0.5;
-      this.legL.lower.rotation.x += 1.2;
-      this.legR.lower.rotation.x += 0.9;
-      this.torso.rotation.x = 0.2;
+      this.legL.pivot.rotation.x += 0.95;
+      this.legR.pivot.rotation.x += 0.55;
+      this.legL.lower.rotation.x -= 1.35;
+      this.legR.lower.rotation.x -= 1.0;
+      this.torso.rotation.x = 0.22;
     }
 
-    // Upper body
+    // ---- Upper body
     const pitch = Math.max(-1, Math.min(1, a.pitch));
     if (a.emote) {
       this.animateEmote(a.emote, a.emoteTime);
@@ -542,39 +557,49 @@ export class CharacterModel {
     }
     const hasGun = a.held !== 'none' && a.held !== 'pickaxe' && a.held !== 'consumable' && a.held !== 'build';
     if (hasGun) {
-      const kick = Math.max(0, 1 - a.sinceShot / 0.1) * 0.15;
-      this.armR.pivot.rotation.x = -Math.PI / 2 + pitch - kick;
-      this.armR.pivot.rotation.y = 0.15;
-      this.armL.pivot.rotation.x = -Math.PI / 2 + pitch + 0.1 - kick;
-      this.armL.pivot.rotation.y = -0.6;
-      this.armL.lower.rotation.x = -0.35;
-      this.torso.rotation.y = -0.25;
-      this.head.rotation.y = 0.25;
+      // Rifle shouldered on the right: chest bladed slightly right, right
+      // elbow bent so the stock sits at the shoulder, left hand on the barrel.
+      const kick = Math.max(0, 1 - a.sinceShot / 0.1) * 0.12;
+      const aimUp = pitch * 0.9;
+      this.torso.rotation.y = -0.3;
+      this.head.rotation.y = 0.3;
+      this.armR.pivot.rotation.z = -0.05;
+      this.armR.pivot.rotation.x = 0.6 + aimUp + kick;
+      this.armR.lower.rotation.x = Math.PI / 2 - 0.6;
+      this.armR.lower.rotation.y = -0.25;
+      this.armL.pivot.rotation.z = 0.95;
+      this.armL.pivot.rotation.x = 1.3 + aimUp + kick;
+      this.armL.lower.rotation.x = 0.3;
       if (a.reloading) {
-        this.armL.pivot.rotation.x = -0.6 + Math.sin(this.phase * 5) * 0.3;
-        this.armR.pivot.rotation.x = -1.1 + pitch * 0.5;
+        this.armL.pivot.rotation.x = 0.6 + Math.sin(this.phase * 5) * 0.25;
+        this.armL.pivot.rotation.z = 0.5;
+        this.armR.lower.rotation.x = Math.PI / 2 - 0.9;
       }
     } else if (a.held === 'pickaxe') {
       const sw = a.sinceSwing < 0.45 ? Math.sin((a.sinceSwing / 0.45) * Math.PI) : 0;
-      this.armR.pivot.rotation.x = -0.5 - sw * 1.8 + pitch * 0.5;
-      this.armR.lower.rotation.x = -0.5 + sw * 0.4;
-      this.armL.pivot.rotation.x = moving ? -s * 0.6 : 0.1;
-      this.torso.rotation.y = -sw * 0.4;
+      // Raised back over the shoulder, then chopped forward.
+      this.armR.pivot.rotation.x = sw > 0 ? 2.4 - (a.sinceSwing / 0.45) * 2.6 + pitch * 0.4 : 0.45 + pitch * 0.4;
+      this.armR.lower.rotation.x = 0.5;
+      this.armL.pivot.rotation.x = moving ? s * 0.6 * run : 0.15;
+      this.torso.rotation.y = sw * 0.35;
     } else if (a.held === 'build') {
       const push = Math.max(0, 1 - a.sinceBuild / 0.18);
-      this.armR.pivot.rotation.x = -1.2 + pitch * 0.6 - push * 0.3;
-      this.armL.pivot.rotation.x = -1.0 + pitch * 0.6 - push * 0.3;
-      this.armL.pivot.rotation.y = -0.3;
+      this.armR.pivot.rotation.x = 1.15 + pitch * 0.6 + push * 0.3;
+      this.armR.pivot.rotation.z = 0.2;
+      this.armL.pivot.rotation.x = 1.0 + pitch * 0.6 + push * 0.3;
+      this.armL.pivot.rotation.z = -0.25;
     } else if (a.held === 'consumable') {
-      this.armR.pivot.rotation.x = a.usingItem ? -1.4 + Math.sin(this.phase * 3) * 0.1 : -0.7;
-      this.armL.pivot.rotation.x = a.usingItem ? -1.2 : moving ? -s * 0.5 : 0;
+      this.armR.pivot.rotation.x = a.usingItem ? 1.5 + Math.sin(this.phase * 3) * 0.1 : 0.6;
+      this.armR.lower.rotation.x = a.usingItem ? 0.9 : 0.3;
+      this.armL.pivot.rotation.x = a.usingItem ? 1.1 : moving ? s * 0.5 : 0;
+      this.armL.pivot.rotation.z = a.usingItem ? -0.5 : 0;
     } else {
       this.armL.pivot.rotation.x = moving ? -s * 0.7 * run : Math.sin(this.phase) * 0.03;
       this.armR.pivot.rotation.x = moving ? s * 0.7 * run : -Math.sin(this.phase) * 0.03;
-      this.armL.lower.rotation.x = -0.3;
-      this.armR.lower.rotation.x = -0.3;
+      this.armL.lower.rotation.x = 0.3;
+      this.armR.lower.rotation.x = 0.3;
     }
-    this.head.rotation.x = -pitch * 0.5;
+    this.head.rotation.x = pitch * 0.5;
     if (!moving && a.grounded && !a.crouch) this.torso.rotation.x += Math.sin(this.phase * 0.8) * 0.015;
   }
 
@@ -592,7 +617,7 @@ export class CharacterModel {
         this.body.position.y = Math.max(0, Math.sin(Math.min(t, 0.4) * 8) * 0.2);
         break;
       case 'point':
-        this.armR.pivot.rotation.x = -Math.PI / 2;
+        this.armR.pivot.rotation.x = Math.PI / 2;
         this.armL.pivot.rotation.z = -0.2;
         this.head.rotation.y = Math.sin(t * 2) * 0.2;
         break;
@@ -601,8 +626,8 @@ export class CharacterModel {
         this.hips.position.y = 0.92 - Math.abs(Math.sin(t * 5)) * 0.12;
         this.armL.pivot.rotation.z = -1.2 + Math.sin(t * 10) * 0.6;
         this.armR.pivot.rotation.z = 1.2 - Math.cos(t * 10) * 0.6;
-        this.legL.pivot.rotation.x = Math.max(0, Math.sin(t * 10)) * -0.6;
-        this.legR.pivot.rotation.x = Math.max(0, -Math.sin(t * 10)) * -0.6;
+        this.legL.pivot.rotation.x = Math.max(0, Math.sin(t * 10)) * 0.6;
+        this.legR.pivot.rotation.x = Math.max(0, -Math.sin(t * 10)) * 0.6;
         break;
       case 'celebrate':
         this.armL.pivot.rotation.z = -2.7 + s * 0.2;
@@ -610,20 +635,20 @@ export class CharacterModel {
         this.body.position.y = Math.abs(Math.sin(t * 6)) * 0.3;
         break;
       case 'thumbs':
-        this.armR.pivot.rotation.x = -1.4;
-        this.armR.lower.rotation.x = -0.6;
+        this.armR.pivot.rotation.x = 1.3;
+        this.armR.lower.rotation.x = 0.7;
         this.head.rotation.x = Math.sin(t * 3) * 0.1;
         break;
       case 'salute':
-        this.armR.pivot.rotation.set(-1.2, 0, 1.2);
-        this.armR.lower.rotation.x = -2.1;
+        this.armR.pivot.rotation.set(1.3, 0, 0.9);
+        this.armR.lower.rotation.x = 2.1;
         break;
       case 'robot': {
         const step = Math.floor(t * 4) % 4;
-        this.armL.pivot.rotation.x = step % 2 ? -1.57 : 0;
-        this.armR.pivot.rotation.x = step % 2 ? 0 : -1.57;
-        this.armL.lower.rotation.x = -1.57;
-        this.armR.lower.rotation.x = -1.57;
+        this.armL.pivot.rotation.x = step % 2 ? 1.57 : 0;
+        this.armR.pivot.rotation.x = step % 2 ? 0 : 1.57;
+        this.armL.lower.rotation.x = 1.57;
+        this.armR.lower.rotation.x = 1.57;
         this.head.rotation.y = step < 2 ? 0.5 : -0.5;
         break;
       }

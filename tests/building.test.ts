@@ -187,7 +187,12 @@ describe('editing', () => {
     expect(selectionToEdit('wall', FULL_WALL_MASK, new Set([4]))?.mask).toBe(WALL_PRESETS.window);
     expect(selectionToEdit('wall', FULL_WALL_MASK, new Set([0, 1, 2, 3, 4, 5, 6, 7, 8]))).toBeNull();
     expect(selectionToEdit('floor', 0xf, new Set([0, 1]))?.mask).toBe(FLOOR_PRESETS.half);
-    expect(selectionToEdit('ramp', 0xf, new Set([1, 3]))?.rampDir).toBe(1);
+    // Ramps: drag from one tile to another; the ramp rises toward where the drag ends.
+    expect(selectionToEdit('ramp', 0xf, new Set([0, 1]), [0, 1])?.rampDir).toBe(1); // drag +X
+    expect(selectionToEdit('ramp', 0xf, new Set([1, 0]), [1, 0])?.rampDir).toBe(3); // drag -X
+    expect(selectionToEdit('ramp', 0xf, new Set([2, 0]), [2, 0])?.rampDir).toBe(0); // drag -Z
+    expect(selectionToEdit('ramp', 0xf, new Set([0, 2, 3]), [0, 2, 3])?.rampDir).toBe(2); // L-drag: first step (+Z) decides
+    expect(selectionToEdit('ramp', 0xf, new Set([0]), [0])).toBeNull();
   });
 
   it('only the owner can edit', () => {

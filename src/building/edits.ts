@@ -1,4 +1,3 @@
-import { TILE, TILE_H } from '../core/constants';
 import { FULL_QUAD_MASK, FULL_WALL_MASK, quadIndex, wallTileIndex, type BuildPieceType, type GridCoordinate, type Vec3Like } from './grid';
 
 /**
@@ -49,41 +48,23 @@ export function tileAt(type: BuildPieceType, g: GridCoordinate, rotation: number
   return quadIndex(g, p.x, p.z);
 }
 
-/** World-space centre of each edit tile (for drawing the edit grid). */
-export function tileCenters(type: BuildPieceType, g: GridCoordinate, rotation: number, surfaceY: (x: number, z: number) => number): Vec3Like[] {
-  const out: Vec3Like[] = [];
-  if (type === 'wall') {
-    for (let row = 0; row < 3; row++) {
-      for (let col = 0; col < 3; col++) {
-        const y = g.y * TILE_H + (row + 0.5) * (TILE_H / 3);
-        const along = (col + 0.5) * (TILE / 3);
-        if ((rotation & 1) === 0) out.push({ x: g.x * TILE, y, z: g.z * TILE + along });
-        else out.push({ x: g.x * TILE + along, y, z: g.z * TILE });
-      }
-    }
-  } else {
-    for (let q = 0; q < 4; q++) {
-      const x = g.x * TILE + ((q & 1) + 0.5) * (TILE / 2);
-      const z = g.z * TILE + ((q >> 1) + 0.5) * (TILE / 2);
-      out.push({ x, y: surfaceY(x, z), z });
-    }
-  }
-  return out;
-}
-
 /**
- * Convert a set of selected tiles into the resulting edit state.
+ * Convert a selection into the resulting edit state.
+ * Walls / floors / cones: the selected tiles are removed (at least one must remain).
+ * Ramps (2x2, like Fortnite): drag across the tiles — the ramp rises from the
+ * first tile in the direction of the drag. `path` is the drag order.
  * Returns null for a selection that does not produce a valid edit.
  */
-export function selectionToEdit(type: BuildPieceType, currentMask: number, selected: Set<number>): { mask: number; rampDir?: number } | null {
+export function selectionToEdit(type: BuildPieceType, currentMask: number, selected: Set<number>, path: number[] = [...selected]): { mask: number; rampDir?: number } | null {
   if (type === 'ramp') {
-    if (selected.size !== 2) return null;
-    const [a, b] = [...selected].sort();
-    // Quad indices: 0 (x0,z0) 1 (x1,z0) 2 (x0,z1) 3 (x1,z1)
-    if (a === 0 && b === 1) return { mask: FULL_QUAD_MASK, rampDir: 0 }; // low-Z edge → rise toward -Z
-    if (a === 2 && b === 3) return { mask: FULL_QUAD_MASK, rampDir: 2 };
-    if (a === 1 && b === 3) return { mask: FULL_QUAD_MASK, rampDir: 1 };
-    if (a === 0 && b === 2) return { mask: FULL_QUAD_MASK, rampDir: 3 };
+    if (path.length < 2) return null;
+    // Direction of the first straight step of the drag (diagonal steps are ignored).
+    for (let i = 1; i < path.length; i++) {
+      const dx = (path[i] & 1) - (path[i - 1] & 1);
+      const dz = (path[i] >> 1) - (path[i - 1] >> 1);
+      if (dx !== 0 && dz === 0) return { mask: FULL_QUAD_MASK, rampDir: dx > 0 ? 1 : 3 };
+      if (dz !== 0 && dx === 0) return { mask: FULL_QUAD_MASK, rampDir: dz > 0 ? 2 : 0 };
+    }
     return null;
   }
   let mask = fullMask(type);
