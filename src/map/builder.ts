@@ -337,6 +337,7 @@ export class MapBuilder {
       half,
       terrain: this.terrain,
       waterLevel: null,
+      water: null,
       boxes: this.boxes,
       decos: this.decos,
       roofs: this.roofs,

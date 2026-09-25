@@ -187,6 +187,13 @@ export class WorldState {
     }
   }
 
+  /** Water surface height at x,z, or null when there is no water there. */
+  waterAt(x: number, z: number): number | null {
+    const w = this.map.water;
+    if (!w || this.map.waterLevel === null) return null;
+    return Math.hypot(x - w.x, z - w.z) <= w.radius ? this.map.waterLevel : null;
+  }
+
   /** Highest walkable height at x,z not above maxY. */
   supportHeight(x: number, z: number, maxY: number): number {
     let best = this.collision.terrainHeight(x, z);

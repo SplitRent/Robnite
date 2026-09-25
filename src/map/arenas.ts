@@ -109,9 +109,14 @@ export function buildTrainingGrounds(): MapData {
   ];
   for (const [x, z, label] of stations) {
     b.deco('box', [x, 0.02, z], [14, 0.04, 14], 0x2a3542);
-    b.deco('box', [x, 0.03, z - 7], [14, 0.05, 0.25], 0x3ccf8e, [0, 0, 0], { emissive: true });
-    b.sign(x, z - 8, 0, label, 7, 3.6, '#3ccf8e');
-    b.deco('box', [x, 1.8, z - 8.1], [7.4, 3.6, 0.2], 0x1b2430);
+    // The sign board stands on the pad edge facing the spawn so it is readable on arrival.
+    const facing = z < 6 ? 1 : -1;
+    const edge = z + facing * 7.6;
+    b.deco('box', [x, 0.03, z + facing * 7], [14, 0.05, 0.25], 0x3ccf8e, [0, 0, 0], { emissive: true });
+    b.deco('box', [x, 2.6, edge - facing * 0.12], [7.6, 1.6, 0.2], 0x1b2430);
+    b.deco('box', [x - 3.4, 0.9, edge - facing * 0.12], [0.2, 1.8, 0.2], 0x3a4656);
+    b.deco('box', [x + 3.4, 0.9, edge - facing * 0.12], [0.2, 1.8, 0.2], 0x3a4656);
+    b.sign(x, edge, facing > 0 ? 0 : Math.PI, label, 7, 2.6, '#3ccf8e');
   }
   b.pois.push(
     ...stations.map(([x, z, label], i) => ({ id: `station${i}`, name: label, x, z, radius: 10, lootValue: 0 })),

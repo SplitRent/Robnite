@@ -159,8 +159,10 @@ export class Match implements CombatHost {
   private createStorm(): void {
     const half = this.world.map.half;
     const phases = this.mode.id === 'br' ? BR_STORM : ZONEWAR_STORM;
-    const water = this.world.map.waterLevel;
-    this.storm = new Storm(phases, half * 1.5, this.rng.int(1, 1e9), half * 0.85, (x, z) => water === null || this.world.collision.terrainHeight(x, z) > water + 0.5);
+    this.storm = new Storm(phases, half * 1.5, this.rng.int(1, 1e9), half * 0.85, (x, z) => {
+      const water = this.world.waterAt(x, z);
+      return water === null || this.world.collision.terrainHeight(x, z) > water + 0.5;
+    });
   }
 
   private setupBus(): void {
@@ -396,7 +398,7 @@ export class Match implements CombatHost {
       }
       if (frozen) continue;
       const prevJump = this.prevJump.get(c.id) ?? false;
-      const mv = stepMovement(c, this.world.collision, dt, this.world.map.waterLevel, prevJump);
+      const mv = stepMovement(c, this.world.collision, dt, this.world.waterAt(c.pos.x, c.pos.z), prevJump);
       this.prevJump.set(c.id, c.input.jump);
       if (mv.jumped) this.events.emit('JUMP', { combatantId: c.id });
       if (mv.gliderOpened) this.events.emit('GLIDER', { combatantId: c.id, open: true });

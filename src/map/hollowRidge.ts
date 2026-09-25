@@ -107,7 +107,7 @@ export function buildHollowRidge(): MapData {
   // Deployment fallback spawns (not used by BR, but useful for debug).
   for (const p of POIS) b.spawns.push([p.x, p.z]);
 
-  return b.finish('hollow_ridge', 'Hollow Ridge', HR_HALF, { waterLevel: WATER_LEVEL, fogDensity: 0.0026 });
+  return b.finish('hollow_ridge', 'Hollow Ridge', HR_HALF, { waterLevel: WATER_LEVEL, water: { x: LAKE.x, z: LAKE.z, radius: LAKE.r + 12 }, fogDensity: 0.0026 });
 }
 
 // ------------------------------------------------------------------ POIs

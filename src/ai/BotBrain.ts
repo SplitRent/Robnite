@@ -9,6 +9,7 @@ import type { Combatant } from '../player/Combatant';
 import type { Match } from '../game/Match';
 import type { BotDifficulty } from '../game/matchTypes';
 import type { GameAction } from '../networking/protocol';
+import { BotGameAdapter } from '../networking/BotGameAdapter';
 
 export type BotRole = 'fighter' | 'dummy';
 export type BotState =
@@ -95,6 +96,8 @@ export class BotBrain {
   private goalKey = '';
   private goalSince = 0;
   private ignored = new Set<string>();
+  /** The bot's connection to the simulation — same interface a human client uses. */
+  readonly adapter: BotGameAdapter;
 
   constructor(
     private match: Match,
@@ -103,6 +106,7 @@ export class BotBrain {
     readonly role: BotRole,
   ) {
     this.profile = DIFFICULTY[difficulty];
+    this.adapter = new BotGameAdapter(match, self.id);
     match.events.on('SHOT_FIRED', (e) => {
       if (e.shooterId === self.id || !self.alive) return;
       const d = Math.hypot(e.from.x - self.pos.x, e.from.z - self.pos.z);
@@ -126,7 +130,7 @@ export class BotBrain {
   }
 
   private act(a: GameAction): void {
-    this.match.queueAction(this.self.id, a);
+    this.adapter.sendAction(a);
   }
 
   update(dt: number): void {
@@ -495,10 +499,10 @@ export class BotBrain {
     this.moveTarget = best.pos.clone();
     const flat = Math.hypot(best.pos.x - c.pos.x, best.pos.z - c.pos.z);
     if (flat < 2.2 && Math.abs(best.pos.y - c.pos.y) < 2.5) {
-      if (best.kind === 'item') {
-        const g = m.world.items.get(best.id);
-        if (g) m.pickup(c, g);
-      } else m.openChest(c, m.world.chests[best.id]);
+      // Same interaction path as a player: look at it and press interact
+      // (only when the thing under our "crosshair" is the item we want).
+      const under = m.findInteractable(c);
+      if (under && under.kind === best.kind && under.id === best.id) this.act({ type: 'interact' });
       this.equipBest(30);
     }
     return true;
@@ -677,7 +681,9 @@ export class BotBrain {
       if (Math.hypot(d.x, d.z) > 0.5) lookYaw = Math.atan2(-d.x, -d.z);
       if (this.state === 'HARVEST') {
         const r = m.world.resources[this.harvestGoal];
-        if (r) lookPitch = Math.atan2(r.spec.y + 1 - (c.pos.y + c.eyeHeight), Math.max(0.5, Math.hypot(d.x, d.z))) ;
+        if (r) lookPitch = Math.atan2(r.spec.y + 1 - (c.pos.y + c.eyeHeight), Math.max(0.5, Math.hypot(d.x, d.z)));
+      } else if (this.state === 'LOOT') {
+        lookPitch = Math.atan2(this.moveTarget.y + 0.3 - (c.pos.y + c.eyeHeight), Math.max(0.5, Math.hypot(d.x, d.z)));
       }
     }
     if (this.detourUntil > m.time && !engaging) lookYaw = this.detourYaw;
@@ -728,7 +734,7 @@ export class BotBrain {
           const hit = m.world.collision.raycast(probe, pd, 1.2, { includeTerrain: false });
           if (hit) {
             const door = m.world.doorFromCollider(hit.collider);
-            if (door && !door.open) m.toggleDoor(door);
+            if (door && !door.open) this.act({ type: 'interact' });
             else {
               const high = m.world.collision.raycast(new Vector3(c.pos.x, c.pos.y + 1.5, c.pos.z), pd, 1.4, { includeTerrain: false });
               if (!high) this.jumpPulse = 0.12;
@@ -795,6 +801,7 @@ export class BotBrain {
       this.jumpPulse -= dt;
       input.jump = true;
     }
+    this.adapter.sendInput(input);
   }
 
   /** Debug label. */

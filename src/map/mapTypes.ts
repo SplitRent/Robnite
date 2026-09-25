@@ -113,6 +113,8 @@ export interface MapData {
   half: number;
   terrain: Heightfield;
   waterLevel: number | null;
+  /** Circular water body (lake) — water only exists inside it. */
+  water: { x: number; z: number; radius: number } | null;
   boxes: StaticBox[];
   decos: DecoShape[];
   roofs: RoofSpec[];
