@@ -16,7 +16,7 @@ import {
 } from 'three';
 import { SLAB, TILE, TILE_H } from '../core/constants';
 import type { BuildPiece } from '../building/BuildSystem';
-import { CONE_HEIGHT, FULL_QUAD_MASK, FULL_WALL_MASK, type BuildMaterial, type BuildPieceType } from '../building/grid';
+import { CONE_HEIGHT, FULL_QUAD_MASK, FULL_WALL_MASK, RAMP_SPIRAL, wallTriangleCorner, type BuildMaterial, type BuildPieceType } from '../building/grid';
 import type { BuildTarget } from '../building/targeting';
 import { mergeAll, slabGeometry } from './geometry';
 import { buildTexture } from './textures';
@@ -27,6 +27,8 @@ import { buildTexture } from './textures';
  * placed pieces and the ghost preview, so the preview is exactly the piece.
  */
 function wallGeometry(rotation: number, mask: number): BufferGeometry {
+  const corner = wallTriangleCorner(mask);
+  if (corner >= 0) return triangleWallGeometry(rotation, corner);
   const parts: BufferGeometry[] = [];
   const tw = TILE / 3;
   const th = TILE_H / 3;
@@ -69,29 +71,84 @@ function floorGeometry(mask: number): BufferGeometry {
   return g;
 }
 
-function rampGeometry(dir: number): BufferGeometry {
-  // Corners of the top surface (y at local surface height), CCW from above.
+function rampGeometry(dir: number, mask: number): BufferGeometry {
   const T = TILE;
   const H = TILE_H;
-  const h = (x: number, z: number) => {
-    switch (dir & 3) {
+  // Local progress (0..1) across the cell toward direction d.
+  const prog = (d: number, x: number, z: number) => {
+    switch (d & 3) {
       case 0:
-        return ((T - z) / T) * H;
+        return (T - z) / T;
       case 1:
-        return (x / T) * H;
+        return x / T;
       case 2:
-        return (z / T) * H;
+        return z / T;
       default:
-        return ((T - x) / T) * H;
+        return (T - x) / T;
     }
   };
-  const corners = [
-    new Vector3(0, h(0, T), T),
-    new Vector3(T, h(T, T), T),
-    new Vector3(T, h(T, 0), 0),
-    new Vector3(0, h(0, 0), 0),
-  ];
-  return withWhite(slabGeometry(corners, SLAB, 0xffffff, 1 / T));
+  // A sloped slab over the rectangle [xa,xb]x[za,zb] (corners CCW from above).
+  const slab = (xa: number, xb: number, za: number, zb: number, h: (x: number, z: number) => number) =>
+    slabGeometry(
+      [new Vector3(xa, h(xa, zb), zb), new Vector3(xb, h(xb, zb), zb), new Vector3(xb, h(xb, za), za), new Vector3(xa, h(xa, za), za)],
+      SLAB,
+      0xffffff,
+      1 / T,
+    );
+  const halfRect = (quads: number): [number, number, number, number] => {
+    const xs = [quads & 0b0101 ? 0 : T / 2, quads & 0b1010 ? T : T / 2];
+    const zs = [quads & 0b0011 ? 0 : T / 2, quads & 0b1100 ? T : T / 2];
+    return [xs[0], xs[1], zs[0], zs[1]];
+  };
+  const quads = mask & FULL_QUAD_MASK;
+  if (mask & RAMP_SPIRAL) {
+    const [ax, bx, az, bz] = halfRect(quads);
+    const [cx, dx, cz, dz] = halfRect(FULL_QUAD_MASK & ~quads);
+    const first = slab(ax, bx, az, bz, (x, z) => prog(dir, x, z) * H * 0.5);
+    const second = slab(cx, dx, cz, dz, (x, z) => H * 0.5 + prog(dir + 2, x, z) * H * 0.5);
+    return mergeAll([first, second].map(withWhite))!;
+  }
+  if (quads !== FULL_QUAD_MASK) {
+    const [ax, bx, az, bz] = halfRect(quads);
+    return withWhite(slab(ax, bx, az, bz, (x, z) => prog(dir, x, z) * H));
+  }
+  return withWhite(slab(0, T, 0, T, (x, z) => prog(dir, x, z) * H));
+}
+
+/** Triangle-cut wall (see wallTriangleCorner): a diagonal prism. */
+function triangleWallGeometry(rotation: number, corner: number): BufferGeometry {
+  const T = TILE;
+  const H = TILE_H;
+  // Triangle in wall-local (along, y) space.
+  const tri: [number, number][] =
+    corner === 0 ? [[0, H], [T, H], [T, 0]] : corner === 1 ? [[0, 0], [0, H], [T, H]] : corner === 2 ? [[0, 0], [T, 0], [T, H]] : [[0, 0], [T, 0], [0, H]];
+  const half = SLAB / 2;
+  const at = (a: number, y: number, side: number) => ((rotation & 1) === 0 ? [side * half, y, a] : [a, y, side * half]);
+  const P: number[] = [];
+  const U: number[] = [];
+  const face = (pts: number[][]) => {
+    // Build materials are double-sided, so one winding is enough.
+    for (const v of pts) {
+      P.push(v[0], v[1], v[2]);
+      U.push(((rotation & 1) === 0 ? v[2] : v[0]) / T, v[1] / H);
+    }
+  };
+  for (const side of [-1, 1]) face(tri.map(([a, y]) => at(a, y, side)));
+  for (let i = 0; i < 3; i++) {
+    const [a0, y0] = tri[i];
+    const [a1, y1] = tri[(i + 1) % 3];
+    const p0 = at(a0, y0, -1);
+    const p1 = at(a1, y1, -1);
+    const p2 = at(a1, y1, 1);
+    const p3 = at(a0, y0, 1);
+    face([p0, p1, p2]);
+    face([p0, p2, p3]);
+  }
+  const g = new BufferGeometry();
+  g.setAttribute('position', new Float32BufferAttribute(P, 3));
+  g.setAttribute('uv', new Float32BufferAttribute(U, 2));
+  g.computeVertexNormals();
+  return withWhite(g);
 }
 
 function coneGeometry(mask: number): BufferGeometry {
@@ -146,12 +203,31 @@ function scaleUV(g: BufferGeometry, s: number): void {
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * s, uv.getY(i) * s);
 }
 
+/** Flat chevron (^) in the XY plane pointing along +Y, for ramp edit arrows. */
+function chevronGeometry(): BufferGeometry {
+  const P: number[] = [];
+  const arm = (x0: number, y0: number, x1: number, y1: number, w: number) => {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const len = Math.hypot(dx, dy);
+    const nx = (-dy / len) * w;
+    const ny = (dx / len) * w;
+    P.push(x0 - nx, y0 - ny, 0, x1 - nx, y1 - ny, 0, x1 + nx, y1 + ny, 0);
+    P.push(x0 - nx, y0 - ny, 0, x1 + nx, y1 + ny, 0, x0 + nx, y0 + ny, 0);
+  };
+  arm(-0.45, -0.1, 0, 0.12, 0.035);
+  arm(0.45, -0.1, 0, 0.12, 0.035);
+  const g = new BufferGeometry();
+  g.setAttribute('position', new Float32BufferAttribute(P, 3));
+  return g;
+}
+
 const geoCache = new Map<string, BufferGeometry>();
 export function pieceGeometry(type: BuildPieceType, rotation: number, mask: number, rampDir: number): BufferGeometry {
   const key = `${type}:${type === 'wall' ? rotation & 1 : 0}:${mask}:${type === 'ramp' ? rampDir : 0}`;
   let g = geoCache.get(key);
   if (!g) {
-    g = type === 'wall' ? wallGeometry(rotation, mask) : type === 'floor' ? floorGeometry(mask) : type === 'ramp' ? rampGeometry(rampDir) : coneGeometry(mask);
+    g = type === 'wall' ? wallGeometry(rotation, mask) : type === 'floor' ? floorGeometry(mask) : type === 'ramp' ? rampGeometry(rampDir, mask) : coneGeometry(mask);
     geoCache.set(key, g);
   }
   return g;
@@ -186,6 +262,12 @@ export interface EditTile {
   normal: Vector3;
   width: number;
   height: number;
+  /** Not a tile (the hole in the middle of the ramp grid). */
+  hidden?: boolean;
+  /** Force gray (true) / blue (false); by default selected tiles are gray. */
+  gray?: boolean;
+  /** Draw a chevron pointing (up the tile) along this horizontal direction. */
+  arrow?: Vector3;
 }
 
 const MATERIAL_TINT: Record<BuildMaterial, number> = { wood: 0xffffff, stone: 0xffffff, metal: 0xffffff };
@@ -210,6 +292,9 @@ export class BuildView {
   private tileHover: MeshBasicMaterial;
   private tileOnHover: MeshBasicMaterial;
   private tileGeoUnit: PlaneGeometry;
+  private arrows: Mesh[] = [];
+  private arrowGeo: BufferGeometry;
+  private arrowMat: MeshBasicMaterial;
   private time = 0;
 
   constructor(private shadows: boolean) {
@@ -227,11 +312,15 @@ export class BuildView {
     this.ghostEdges.renderOrder = 6;
     this.ghostEdges.visible = false;
     this.group.add(this.ghost, this.ghostEdges);
-    this.tileOn = new MeshBasicMaterial({ color: 0xbfeaff, transparent: true, opacity: 0.35, depthWrite: false, depthTest: false, side: DoubleSide });
-    this.tileOnHover = new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, depthWrite: false, depthTest: false, side: DoubleSide });
-    this.tileOff = new MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.7, depthWrite: false, depthTest: false, side: DoubleSide });
-    this.tileHover = new MeshBasicMaterial({ color: 0x5aa8ff, transparent: true, opacity: 0.85, depthWrite: false, depthTest: false, side: DoubleSide });
+    // Fortnite edit colours: blue = stays, gray = cut away.
+    const tileMat = (color: number, opacity: number) => new MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, depthTest: false, side: DoubleSide });
+    this.tileOn = tileMat(0x1fb6f5, 0.62);
+    this.tileOnHover = tileMat(0x7fdcff, 0.75);
+    this.tileOff = tileMat(0x8d949c, 0.6);
+    this.tileHover = tileMat(0xc2c7cc, 0.7);
     this.tileGeoUnit = new PlaneGeometry(1, 1);
+    this.arrowGeo = chevronGeometry();
+    this.arrowMat = new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false, depthTest: false, side: DoubleSide });
     this.editGroup.visible = false;
     this.group.add(this.editGroup);
   }
@@ -325,8 +414,8 @@ export class BuildView {
   /**
    * Show the edit grid. Each tile is a quad laid on the piece surface
    * (`axisX`/`axisY` span the tile, `normal` faces the player). `selected`
-   * tiles are the ones the player has picked (removed for walls/floors/cones,
-   * the drag path for ramps); `hover` is the tile under the crosshair.
+   * tiles are the ones the player has picked (shown gray = removed, unless the
+   * tile says otherwise); `hover` is the tile under the crosshair.
    */
   showEditGrid(piece: BuildPiece | null, tiles: EditTile[], selected: Set<number>, hover: number): void {
     if (!piece) {
@@ -341,9 +430,10 @@ export class BuildView {
       this.editGroup.add(m);
     }
     const basis = new Matrix4();
+    let arrowCount = 0;
     this.editTiles.forEach((m, i) => {
       const t = tiles[i];
-      if (!t) {
+      if (!t || t.hidden) {
         m.visible = false;
         return;
       }
@@ -352,9 +442,26 @@ export class BuildView {
       m.quaternion.setFromRotationMatrix(basis);
       m.position.copy(t.center).addScaledVector(t.normal, 0.08);
       m.scale.set(t.width - 0.1, t.height - 0.1, 1);
-      const isSel = selected.has(i);
-      m.material = isSel ? (i === hover ? this.tileHover : this.tileOff) : i === hover ? this.tileOnHover : this.tileOn;
+      const gray = t.gray ?? selected.has(i);
+      m.material = gray ? (i === hover ? this.tileHover : this.tileOff) : i === hover ? this.tileOnHover : this.tileOn;
+      if (t.arrow) {
+        let a = this.arrows[arrowCount];
+        if (!a) {
+          a = new Mesh(this.arrowGeo, this.arrowMat);
+          a.renderOrder = 8;
+          this.arrows.push(a);
+          this.editGroup.add(a);
+        }
+        a.visible = true;
+        // Point the chevron along the arrow direction projected onto the tile.
+        const ay = t.arrow.clone().addScaledVector(t.normal, -t.arrow.dot(t.normal)).normalize();
+        const ax = new Vector3().crossVectors(ay, t.normal);
+        a.quaternion.setFromRotationMatrix(basis.makeBasis(ax, ay, t.normal));
+        a.position.copy(t.center).addScaledVector(t.normal, 0.1);
+        arrowCount++;
+      }
     });
+    for (let i = arrowCount; i < this.arrows.length; i++) this.arrows[i].visible = false;
   }
 
   get pieceCount(): number {
@@ -373,6 +480,8 @@ export class BuildView {
     this.tileHover.dispose();
     this.tileOnHover.dispose();
     this.tileGeoUnit.dispose();
+    this.arrowGeo.dispose();
+    this.arrowMat.dispose();
     this.group.removeFromParent();
   }
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import { flatWorld, targetFrom } from './helpers';
 import { TILE, TILE_H } from '../src/core/constants';
-import { pieceBounds, FULL_WALL_MASK } from '../src/building/grid';
+import { pieceBounds, FULL_WALL_MASK, RAMP_SPIRAL, rampSurfaceHeight, wallBoxes, wallTriangleCorner } from '../src/building/grid';
 import { WALL_PRESETS, FLOOR_PRESETS, selectionToEdit } from '../src/building/edits';
 import { makeTarget, computeBuildTarget } from '../src/building/targeting';
 import { moveCharacter } from '../src/physics/character';
@@ -28,15 +28,20 @@ describe('build targeting (crosshair → grid)', () => {
     expect(t2.grid).toEqual({ x: 0, y: 0, z: -2 });
   });
 
-  it('wall on the ground snaps to the grid line ahead of the crosshair', () => {
+  it('wall goes on the nearest grid line in front of the player, wherever the crosshair lands', () => {
     const { world, builds } = flatWorld();
     const pos = new Vector3(2, 0, 2);
-    const t = targetFrom(world, builds, pos, 0, pitchFor(1.5), 'wall'); // hit z = 0.5 → line z = 0
+    const t = targetFrom(world, builds, pos, 0, pitchFor(1.5), 'wall');
     expect(t.piece).toBe('wall');
     expect(t.rotation).toBe(1);
     expect(t.grid).toEqual({ x: 0, y: 0, z: 0 });
-    const t2 = targetFrom(world, builds, pos, 0, pitchFor(1.5 + TILE), 'wall'); // one tile further
-    expect(t2.grid).toEqual({ x: 0, y: 0, z: -1 });
+    // Aiming far away still builds on the closest line (like Fortnite).
+    expect(targetFrom(world, builds, pos, 0, pitchFor(1.5 + TILE * 2), 'wall').grid).toEqual({ x: 0, y: 0, z: 0 });
+    // Looking +X builds on the cell's +X line; looking up puts it one level higher.
+    expect(targetFrom(world, builds, pos, -Math.PI / 2, 0, 'wall').grid).toEqual({ x: 1, y: 0, z: 0 });
+    expect(targetFrom(world, builds, pos, 0, 0.9, 'wall').grid).toEqual({ x: 0, y: 1, z: 0 });
+    // Standing right on a line: the next line is used instead of building through the player.
+    expect(targetFrom(world, builds, new Vector3(2, 0, 0.2), 0, pitchFor(2), 'wall').grid).toEqual({ x: 0, y: 0, z: -1 });
   });
 
   it('preview and placement are identical: the placed piece occupies the previewed bounds', () => {
@@ -187,12 +192,48 @@ describe('editing', () => {
     expect(selectionToEdit('wall', FULL_WALL_MASK, new Set([4]))?.mask).toBe(WALL_PRESETS.window);
     expect(selectionToEdit('wall', FULL_WALL_MASK, new Set([0, 1, 2, 3, 4, 5, 6, 7, 8]))).toBeNull();
     expect(selectionToEdit('floor', 0xf, new Set([0, 1]))?.mask).toBe(FLOOR_PRESETS.half);
-    // Ramps: drag from one tile to another; the ramp rises toward where the drag ends.
-    expect(selectionToEdit('ramp', 0xf, new Set([0, 1]), [0, 1])?.rampDir).toBe(1); // drag +X
-    expect(selectionToEdit('ramp', 0xf, new Set([1, 0]), [1, 0])?.rampDir).toBe(3); // drag -X
-    expect(selectionToEdit('ramp', 0xf, new Set([2, 0]), [2, 0])?.rampDir).toBe(0); // drag -Z
-    expect(selectionToEdit('ramp', 0xf, new Set([0, 2, 3]), [0, 2, 3])?.rampDir).toBe(2); // L-drag: first step (+Z) decides
-    expect(selectionToEdit('ramp', 0xf, new Set([0]), [0])).toBeNull();
+    // Ramp grid (iz*3 + ix): corners 0,2,6,8; strips 1,3,5,7; 4 is the hole.
+    // The ramp rises toward the last tile the drag touched.
+    const ramp = (path: number[]) => selectionToEdit('ramp', 0xf, new Set(path), path);
+    expect(ramp([1, 7])).toEqual({ mask: 0xf, rampDir: 2 }); // middle strip → opposite strip: full ramp, +Z
+    expect(ramp([7, 1])).toEqual({ mask: 0xf, rampDir: 0 });
+    expect(ramp([3, 5])).toEqual({ mask: 0xf, rampDir: 1 });
+    expect(ramp([6, 3, 0])).toEqual({ mask: 0b0101, rampDir: 0 }); // up the -X side: half ramp
+    expect(ramp([0, 1, 2])).toEqual({ mask: 0b0011, rampDir: 1 }); // along the -Z row: half ramp
+    expect(ramp([6, 3, 0, 1, 2, 5, 8])).toEqual({ mask: RAMP_SPIRAL | 0b0101, rampDir: 0 }); // U: spiral stairs
+    expect(ramp([0, 8])?.rampDir).toBe(2); // diagonal → full ramp
+    expect(ramp([1])).toBeNull();
+  });
+
+  it('ramp shapes: half ramps and spiral stairs change the walkable surface', () => {
+    const { builds, actor } = flatWorld();
+    const g = { x: 0, y: 0, z: -1 };
+    const piece = builds.place(makeTarget('ramp', g, 0), actor)!;
+    // A half ramp must run along its long side.
+    expect(builds.applyEdit(piece.id, actor, 0b0101, 1)).toBe(false);
+    expect(builds.applyEdit(piece.id, actor, 0b0101, 0)).toBe(true);
+    expect(builds.isEdited(piece)).toBe(true);
+    expect(rampSurfaceHeight(g, 0, 0b0101, 3, -2)).toBeNull(); // +X half cut away
+    expect(rampSurfaceHeight(g, 0, 0b0101, 1, -2)).toBeCloseTo(TILE_H / 2);
+    // Spiral: -X flight rises toward -Z to mid height, +X flight climbs back to the top.
+    const sp = RAMP_SPIRAL | 0b0101;
+    expect(rampSurfaceHeight(g, 0, sp, 1, -4 + 0.01)).toBeCloseTo(TILE_H / 2, 1);
+    expect(rampSurfaceHeight(g, 0, sp, 3, -4 + 0.01)).toBeCloseTo(TILE_H / 2, 1);
+    expect(rampSurfaceHeight(g, 0, sp, 3, -0.01)).toBeCloseTo(TILE_H, 1);
+    expect(rampSurfaceHeight(g, 0, sp, 1, -0.01)).toBeCloseTo(0, 1);
+    expect(builds.applyEdit(piece.id, actor, sp, 0)).toBe(true);
+    builds.resetEdit(piece.id, actor);
+    expect(builds.isEdited(piece)).toBe(false);
+  });
+
+  it('removing a corner L of wall tiles cuts the wall diagonally', () => {
+    const topLeftCut = FULL_WALL_MASK & ~((1 << 6) | (1 << 7) | (1 << 3));
+    expect(wallTriangleCorner(topLeftCut)).toBe(2);
+    expect(wallTriangleCorner(WALL_PRESETS.window)).toBe(-1);
+    const boxes = wallBoxes({ x: 0, y: 0, z: 0 }, 1, topLeftCut);
+    // Solid part grows toward the far end (lower-right triangle).
+    expect(boxes[0].maxY).toBeLessThan(boxes[boxes.length - 1].maxY);
+    expect(boxes[boxes.length - 1].maxY).toBeGreaterThan(TILE_H * 0.9);
   });
 
   it('only the owner can edit', () => {

@@ -98,12 +98,32 @@ export function pieceCenter(piece: BuildPieceType, g: GridCoordinate, rotation: 
   return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2, z: (b.minZ + b.maxZ) / 2 };
 }
 
-/** Ramp surface height at (px, pz) for a ramp in cell g rising toward dir. */
-export function rampHeight(g: GridCoordinate, dir: number, px: number, pz: number): number | null {
+/**
+ * RAMP EDIT SHAPES (stored in the ramp's edit mask)
+ *   0b1111                  full ramp rising toward rampDir
+ *   two quadrants (half)    half-width ramp; rampDir runs along the half
+ *   RAMP_SPIRAL | half      spiral stairs: the half rises toward rampDir to
+ *                           mid height, the other half climbs back the
+ *                           opposite way to the top
+ */
+export const RAMP_SPIRAL = 0x10;
+/** Quadrant pairs forming a half along X (rows) and along Z (columns). */
+const RAMP_HALVES_X = [0b0011, 0b1100];
+const RAMP_HALVES_Z = [0b0101, 0b1010];
+
+/** Whether an edit mask + direction is a shape a ramp can take. */
+export function isValidRampEdit(mask: number, dir: number): boolean {
+  if (mask === FULL_QUAD_MASK) return true;
+  if (mask & ~(RAMP_SPIRAL | FULL_QUAD_MASK)) return false;
+  const half = mask & FULL_QUAD_MASK;
+  // A half (or a spiral flight) must run along its long axis.
+  return (dir & 1) === 1 ? RAMP_HALVES_X.includes(half) : RAMP_HALVES_Z.includes(half);
+}
+
+/** 0..1 progress across the cell in the rising direction. */
+function rampProgress(g: GridCoordinate, dir: number, px: number, pz: number): number {
   const x0 = g.x * TILE;
   const z0 = g.z * TILE;
-  const e = 0.02;
-  if (px < x0 - e || px > x0 + TILE + e || pz < z0 - e || pz > z0 + TILE + e) return null;
   let t: number;
   switch (dir & 3) {
     case 0:
@@ -118,8 +138,28 @@ export function rampHeight(g: GridCoordinate, dir: number, px: number, pz: numbe
     default:
       t = (x0 + TILE - px) / TILE;
   }
-  t = Math.min(1, Math.max(0, t));
-  return g.y * TILE_H + t * TILE_H;
+  return Math.min(1, Math.max(0, t));
+}
+
+/** Ramp surface height at (px, pz) for a full ramp in cell g rising toward dir. */
+export function rampHeight(g: GridCoordinate, dir: number, px: number, pz: number): number | null {
+  return rampSurfaceHeight(g, dir, FULL_QUAD_MASK, px, pz);
+}
+
+/** Surface height of a (possibly edited) ramp; null where the ramp was cut away. */
+export function rampSurfaceHeight(g: GridCoordinate, dir: number, mask: number, px: number, pz: number): number | null {
+  const x0 = g.x * TILE;
+  const z0 = g.z * TILE;
+  const e = 0.02;
+  if (px < x0 - e || px > x0 + TILE + e || pz < z0 - e || pz > z0 + TILE + e) return null;
+  const y0 = g.y * TILE_H;
+  const inFirst = (mask & (1 << quadIndex(g, px, pz))) !== 0;
+  if (mask & RAMP_SPIRAL) {
+    if (inFirst) return y0 + rampProgress(g, dir, px, pz) * TILE_H * 0.5;
+    return y0 + TILE_H * 0.5 + rampProgress(g, dir + 2, px, pz) * TILE_H * 0.5;
+  }
+  if (!inFirst) return null;
+  return y0 + rampProgress(g, dir, px, pz) * TILE_H;
 }
 
 /** Cone (pyramid roof) height; quadrants removed by edits return null. */
@@ -152,12 +192,61 @@ export function wallTileIndex(g: GridCoordinate, rotation: number, px: number, p
 }
 
 /**
+ * Removing the three tiles of a wall corner (an "L") cuts the wall along its
+ * diagonal, like Fortnite's triangle / 45° edits. Returns the removed corner
+ * (0 bottom-left, 1 bottom-right, 2 top-left, 3 top-right) or -1.
+ * Left/right are in wall-local "along" order (col 0 = low coordinate).
+ */
+const WALL_CORNER_CUTS = [
+  [0, 1, 3],
+  [2, 1, 5],
+  [6, 7, 3],
+  [8, 7, 5],
+].map((r) => FULL_WALL_MASK & ~r.reduce((m, i) => m | (1 << i), 0));
+
+export function wallTriangleCorner(mask: number): number {
+  return WALL_CORNER_CUTS.indexOf(mask);
+}
+
+/**
+ * For a triangle-cut wall: the solid height range [lo, hi] (relative to the
+ * wall base) at `a` metres along the wall.
+ */
+export function wallTriangleSpan(corner: number, a: number): [number, number] {
+  const f = Math.min(1, Math.max(0, a / TILE));
+  switch (corner) {
+    case 0:
+      return [TILE_H * (1 - f), TILE_H];
+    case 1:
+      return [TILE_H * f, TILE_H];
+    case 2:
+      return [0, TILE_H * f];
+    default:
+      return [0, TILE_H * (1 - f)];
+  }
+}
+
+/**
  * Solid box pieces of a wall given its 3x3 edit mask. Vertical runs in each
  * column are merged to reduce collider count.
  */
 export function wallBoxes(g: GridCoordinate, rotation: number, mask: number): AABB[] {
   const boxes: AABB[] = [];
   const half = SLAB / 2;
+  const corner = wallTriangleCorner(mask);
+  if (corner >= 0) {
+    // Diagonal cut: approximate with thin vertical slices.
+    const n = 8;
+    const w = TILE / n;
+    for (let i = 0; i < n; i++) {
+      const [lo, hi] = wallTriangleSpan(corner, (i + 0.5) * w);
+      const ya = g.y * TILE_H + lo;
+      const yb = g.y * TILE_H + hi;
+      if ((rotation & 1) === 0) boxes.push(makeAABB(g.x * TILE - half, ya, g.z * TILE + i * w, g.x * TILE + half, yb, g.z * TILE + (i + 1) * w));
+      else boxes.push(makeAABB(g.x * TILE + i * w, ya, g.z * TILE - half, g.x * TILE + (i + 1) * w, yb, g.z * TILE + half));
+    }
+    return boxes;
+  }
   const tw = TILE / 3;
   const th = TILE_H / 3;
   const y0 = g.y * TILE_H;
