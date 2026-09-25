@@ -5,3 +5,4 @@ dist
 test-results
 tests/e2e/screenshots
 server/node_modules
+tests/scratch
