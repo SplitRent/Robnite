@@ -11,7 +11,8 @@ import {
   floorBoxes,
   pieceBounds,
   pieceCenter,
-  rampHeight,
+  isValidRampEdit,
+  rampSurfaceHeight,
   slotKey,
   wallBoxes,
   type BuildMaterial,
@@ -35,7 +36,7 @@ export interface BuildPiece {
   /** 0..1 build progress; health grows with it. */
   progress: number;
   createdAt: number;
-  /** Edit mask (wall 9 bits, floor/cone 4 bits). */
+  /** Edit mask (wall 9 bits, floor/cone 4 bits, ramp shape — see RAMP_SPIRAL). */
   editMask: number;
   /** Current ramp rising direction (edits can change it). */
   rampDir: number;
@@ -207,7 +208,8 @@ export class BuildSystem {
         break;
       case 'ramp': {
         const dir = piece.rampDir;
-        piece.colliders.push(this.world.addSurface(piece.bounds, (x, z) => rampHeight(g, dir, x, z), 'build', piece.id, mat));
+        const mask = piece.editMask;
+        piece.colliders.push(this.world.addSurface(piece.bounds, (x, z) => rampSurfaceHeight(g, dir, mask, x, z), 'build', piece.id, mat));
         break;
       }
       case 'cone': {
@@ -234,8 +236,9 @@ export class BuildSystem {
     if (!piece) return false;
     if (actor && !this.canEdit(piece, actor).valid) return false;
     if (piece.type === 'ramp') {
-      if (rampDir === undefined) return false;
+      if (rampDir === undefined || !isValidRampEdit(mask, rampDir)) return false;
       piece.rampDir = rampDir & 3;
+      piece.editMask = mask;
     } else {
       if (mask === 0) return false;
       piece.editMask = mask & (piece.type === 'wall' ? FULL_WALL_MASK : FULL_QUAD_MASK);
@@ -257,7 +260,7 @@ export class BuildSystem {
   }
 
   isEdited(piece: BuildPiece): boolean {
-    if (piece.type === 'ramp') return piece.rampDir !== (piece.rotation & 3);
+    if (piece.type === 'ramp') return piece.rampDir !== (piece.rotation & 3) || piece.editMask !== FULL_QUAD_MASK;
     return piece.editMask !== (piece.type === 'wall' ? FULL_WALL_MASK : FULL_QUAD_MASK);
   }
 

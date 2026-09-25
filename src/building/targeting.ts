@@ -30,6 +30,8 @@ export interface TargetInput {
   dir: Vec3Like;
   /** Player eye position — used to skip geometry between camera and player. */
   eye: Vec3Like;
+  /** Player feet position (defaults to 1.6 m below the eye). Walls are placed relative to it. */
+  feet?: Vec3Like;
   piece: BuildPieceType;
   /** Extra quarter turns chosen with the rotate key. */
   userRotation: number;
@@ -39,8 +41,8 @@ export interface TargetInput {
 
 /** Distance ahead of the player used when the crosshair hits nothing. */
 export const AIR_TARGET_DISTANCE = TILE * 1.25;
-/** A wall line is chosen when the crosshair point is within this fraction of a tile before it. */
-const WALL_FORWARD_BIAS = 0.75;
+/** A wall line closer than this to the player is skipped (it would go through them). */
+const WALL_MIN_GAP = 0.45;
 
 const o = new Vector3();
 const d = new Vector3();
@@ -89,26 +91,34 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
       break;
     }
     case 'wall': {
+      // Like Fortnite: the wall goes on the nearest grid line in front of the
+      // player (not where the crosshair lands); pitch picks the level.
+      const feet = input.feet ?? { x: input.eye.x, y: input.eye.y - 1.6, z: input.eye.z };
       const alongX = look === 1 || look === 3;
-      // Crosshair point → nearest wall line, biased forward along the look axis.
-      const lineIndex = (coord: number, positive: boolean) =>
-        positive ? Math.ceil(coord / TILE - (1 - WALL_FORWARD_BIAS)) : Math.floor(coord / TILE + (1 - WALL_FORWARD_BIAS));
-      let y = Math.floor((q.y + 0.05) / TILE_H);
-      if (alongX) {
-        rotation = (0 + input.userRotation) & 1;
-        grid = rotation === 0
-          ? { x: lineIndex(q.x, look === 1), y, z: Math.floor(q.z / TILE) }
-          : { x: Math.floor(q.x / TILE), y, z: lineIndex(q.z, d.z > 0) };
-      } else {
-        rotation = (1 + input.userRotation) & 1;
-        grid = rotation === 1
-          ? { x: Math.floor(q.x / TILE), y, z: lineIndex(q.z, look === 2) }
-          : { x: lineIndex(q.x, d.x > 0), y, z: Math.floor(q.z / TILE) };
-      }
+      rotation = ((alongX ? 0 : 1) + input.userRotation) & 1;
+      const cellX = Math.floor(feet.x / TILE);
+      const cellZ = Math.floor(feet.z / TILE);
+      // Nearest line ahead of the player on an axis, skipping one they stand on.
+      const lineAhead = (pos: number, cell: number, positive: boolean) => {
+        if (positive) return (cell + 1) * TILE - pos < WALL_MIN_GAP ? cell + 2 : cell + 1;
+        return pos - cell * TILE < WALL_MIN_GAP ? cell - 1 : cell;
+      };
+      grid = rotation === 0
+        ? { x: lineAhead(feet.x, cellX, d.x > 0), y: 0, z: cellZ }
+        : { x: cellX, y: 0, z: lineAhead(feet.z, cellZ, d.z > 0) };
+      // Level: where the crosshair ray crosses the wall plane, within one level of the feet.
+      const feetLevel = Math.floor((feet.y + 0.1) / TILE_H);
+      const plane = rotation === 0 ? grid.x * TILE : grid.z * TILE;
+      const oa = rotation === 0 ? o.x : o.z;
+      const da = rotation === 0 ? d.x : d.z;
+      const tPlane = Math.abs(da) > 1e-4 ? (plane - oa) / da : -1;
+      let y = feetLevel;
+      if (tPlane > 0) y = Math.floor((o.y + d.y * tPlane + 0.05) / TILE_H);
+      y = Math.max(feetLevel - 1, Math.min(feetLevel + 1, y));
       const cx = rotation === 0 ? grid.x * TILE : (grid.x + 0.5) * TILE;
       const cz = rotation === 0 ? (grid.z + 0.5) * TILE : grid.z * TILE;
       const ground = world.terrainHeight(cx, cz);
-      if (ground > grid.y * TILE_H + TILE_H * 0.6) y += 1;
+      if (ground > y * TILE_H + TILE_H * 0.6) y += 1;
       grid.y = y;
       break;
     }

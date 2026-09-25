@@ -1,8 +1,8 @@
 import { Vector3 } from 'three';
 import { TILE, TILE_H } from '../core/constants';
 import { computeBuildTarget, type BuildTarget } from '../building/targeting';
-import { CONE_HEIGHT, DIR_VECTORS } from '../building/grid';
-import { removedTiles, selectionToEdit, tileAt } from '../building/edits';
+import { CONE_HEIGHT, DIR_VECTORS, FULL_QUAD_MASK, RAMP_SPIRAL, quadIndex, rampSurfaceHeight } from '../building/grid';
+import { rampCellActive, rampCellRange, removedTiles, selectionToEdit, tileAt } from '../building/edits';
 import { raySurface } from '../physics/collision';
 import type { EditTile } from '../rendering/BuildView';
 import type { BuildPiece } from '../building/BuildSystem';
@@ -63,7 +63,7 @@ export class BuildController {
       return;
     }
     const eye = h.eye(new Vector3());
-    const t = computeBuildTarget(this.match.world.collision, { origin: ray.origin, dir: ray.dir, eye, piece: h.buildPiece, userRotation: h.buildRotation, pieceInfo: this.pieceInfo });
+    const t = computeBuildTarget(this.match.world.collision, { origin: ray.origin, dir: ray.dir, eye, feet: h.pos, piece: h.buildPiece, userRotation: h.buildRotation, pieceInfo: this.pieceInfo });
     this.match.builds.check(t, h);
     this.target = t;
     // Aiming at a slot that is already built: show nothing over the real piece.
@@ -74,7 +74,8 @@ export class BuildController {
   handleFire(pressed: boolean, held: boolean): void {
     const t = this.target;
     if (!t || !this.human.buildPiece) return;
-    if (!held) {
+    // A tap can press and release within one frame: `pressed` still counts.
+    if (!held && !pressed) {
       this.lastPlacedKey = '';
       return;
     }
@@ -82,7 +83,7 @@ export class BuildController {
     if (pressed || t.key !== this.lastPlacedKey) {
       // Send a copy of exactly what the ghost shows.
       this.adapter.sendAction({ type: 'place', target: { ...t, grid: { ...t.grid } } });
-      this.lastPlacedKey = t.key;
+      this.lastPlacedKey = held ? t.key : '';
     }
   }
 
@@ -134,8 +135,10 @@ export class BuildController {
     let t: number;
     const col = piece.colliders[0];
     if ((piece.type === 'ramp' || piece.type === 'cone') && col && col.kind === 'surface') {
-      // Hit the actual slope so the hovered tile is the one drawn under the crosshair.
-      const st = raySurface(ray.origin, ray.dir, col, 40, new Vector3());
+      // Hit the slope the grid is drawn on so the hovered tile is the one under
+      // the crosshair (for a cut-down ramp that is the full ramp's slope).
+      const surface = piece.type === 'ramp' ? { ...col, height: (x: number, z: number) => rampDisplayHeight(piece, x, z) } : col;
+      const st = raySurface(ray.origin, ray.dir, surface, 40, new Vector3());
       if (st >= 0) {
         const hp = ray.origin.clone().addScaledVector(ray.dir, st);
         return tileAt(piece.type, g, piece.rotation, hp);
@@ -199,7 +202,7 @@ export class BuildController {
         return false;
       }
     }
-    this.view.showEditGrid(piece, editTiles(piece, viewer), e.selection, e.hover);
+    this.view.showEditGrid(piece, editTiles(piece, viewer, e.dragMode ? e.path : null), e.selection, e.hover);
     return true;
   }
 
@@ -214,7 +217,7 @@ export class BuildController {
       if (e.changed) this.notice?.(piece.type === 'ramp' ? 'Drag across the ramp in the direction it should rise' : 'At least one tile must remain');
       return;
     }
-    if (piece.type === 'ramp' ? result.rampDir === piece.rampDir : result.mask === piece.editMask) return;
+    if (result.mask === piece.editMask && (piece.type !== 'ramp' || result.rampDir === piece.rampDir)) return;
     this.adapter.sendAction({ type: 'edit', pieceId: piece.id, mask: result.mask, rampDir: result.rampDir });
   }
 
@@ -277,10 +280,11 @@ function rayBox(o: Vector3, d: Vector3, b: { minX: number; minY: number; minZ: n
 }
 
 /**
- * Edit tiles laid on the piece surface: 3x3 on walls, 2x2 on floors, cones
- * and ramps (tilted along the slope). Normals face the viewer.
+ * Edit tiles laid on the piece surface: 3x3 on walls, 2x2 on floors and
+ * cones, and the Fortnite ramp grid (corners + strips) along the slope.
+ * Normals face the viewer. `path` is the ramp drag in progress, if any.
  */
-export function editTiles(piece: BuildPiece, viewer: Vector3): EditTile[] {
+export function editTiles(piece: BuildPiece, viewer: Vector3, path: number[] | null = null): EditTile[] {
   const g = piece.grid;
   const x0 = g.x * TILE;
   const y0 = g.y * TILE_H;
@@ -305,30 +309,7 @@ export function editTiles(piece: BuildPiece, viewer: Vector3): EditTile[] {
     }
     return out;
   }
-  if (piece.type === 'ramp') {
-    const [dx, dz] = DIR_VECTORS[piece.rampDir & 3];
-    const d = new Vector3(dx, 0, dz);
-    const axisY = d.clone().multiplyScalar(TILE).addScaledVector(up, TILE_H).normalize();
-    let normal = up.clone().multiplyScalar(TILE).addScaledVector(d, -TILE_H).normalize();
-    let axisX = new Vector3().crossVectors(axisY, normal);
-    const slopeLen = Math.hypot(TILE, TILE_H) / 2;
-    for (let q = 0; q < 4; q++) {
-      const cx = x0 + ((q & 1) + 0.5) * (TILE / 2);
-      const cz = z0 + ((q >> 1) + 0.5) * (TILE / 2);
-      const t = (cx - x0) / TILE * dx + (cz - z0) / TILE * dz;
-      const frac = dx + dz > 0 ? t : 1 + t;
-      out.push({ center: new Vector3(cx, y0 + frac * TILE_H, cz), axisX, axisY, normal, width: TILE / 2, height: slopeLen });
-    }
-    if (viewer.y < out[0].center.y - 1) {
-      normal = normal.clone().negate();
-      axisX = axisX.clone().negate();
-      for (const tile of out) {
-        tile.normal = normal;
-        tile.axisX = axisX;
-      }
-    }
-    return out;
-  }
+  if (piece.type === 'ramp') return rampEditTiles(piece, viewer, path);
   // Floors and cones: flat 2x2 (cone tiles sit at the quadrant's mid height).
   const baseY = piece.type === 'cone' ? y0 + CONE_HEIGHT * 0.5 : y0;
   const below = viewer.y < baseY;
@@ -338,6 +319,81 @@ export function editTiles(piece: BuildPiece, viewer: Vector3): EditTile[] {
   for (let q = 0; q < 4; q++) {
     const center = new Vector3(x0 + ((q & 1) + 0.5) * (TILE / 2), baseY, z0 + ((q >> 1) + 0.5) * (TILE / 2));
     out.push({ center, axisX, axisY, normal, width: TILE / 2, height: TILE / 2 });
+  }
+  return out;
+}
+
+/** Height of the slope the ramp edit grid lies on (the full slope for a half ramp). */
+function rampDisplayHeight(piece: BuildPiece, x: number, z: number): number | null {
+  const mask = piece.editMask & RAMP_SPIRAL ? piece.editMask : FULL_QUAD_MASK;
+  return rampSurfaceHeight(piece.grid, piece.rampDir, mask, x, z);
+}
+
+/** Cells of the ramp grid that carry the incline arrows for a ramp shape. */
+function rampArrows(mask: number, dir: number): Map<number, number> {
+  const out = new Map<number, number>();
+  // Strips whose thin side runs along the incline: 3 & 5 for Z, 1 & 7 for X.
+  const strips = (d: number) => ((d & 1) === 0 ? [3, 5] : [1, 7]);
+  if (mask & RAMP_SPIRAL) {
+    const [a, b] = strips(dir);
+    // Arrow a sits on the first flight if its side of the ramp is that half.
+    const firstHasA = rampCellActive(mask & FULL_QUAD_MASK, a);
+    out.set(firstHasA ? a : b, dir & 3);
+    out.set(firstHasA ? b : a, (dir + 2) & 3);
+    return out;
+  }
+  for (const c of strips(dir)) if (rampCellActive(mask, c)) out.set(c, dir & 3);
+  return out;
+}
+
+function rampEditTiles(piece: BuildPiece, viewer: Vector3, path: number[] | null): EditTile[] {
+  const g = piece.grid;
+  const x0 = g.x * TILE;
+  const z0 = g.z * TILE;
+  const up = new Vector3(0, 1, 0);
+  const spiral = (piece.editMask & RAMP_SPIRAL) !== 0;
+  const dragging = !!path && path.length > 0;
+  // Arrows show the shape the drag would make, or the current one.
+  const preview = dragging && path.length > 1 ? selectionToEdit('ramp', piece.editMask, new Set(path), path) : null;
+  const arrows = preview ? rampArrows(preview.mask, preview.rampDir!) : dragging ? new Map<number, number>() : rampArrows(piece.editMask, piece.rampDir);
+  const out: EditTile[] = [];
+  for (let cell = 0; cell < 9; cell++) {
+    const [xa, xb] = rampCellRange(cell % 3);
+    const [za, zb] = rampCellRange(Math.floor(cell / 3));
+    const cx = x0 + (xa + xb) / 2;
+    const cz = z0 + (za + zb) / 2;
+    // Slope of this cell: its flight's direction and rise per metre.
+    let dir = piece.rampDir;
+    let rise = TILE_H / TILE;
+    if (spiral) {
+      rise *= 0.5;
+      if (!(piece.editMask & (1 << quadIndex(g, cx, cz)))) dir += 2;
+    }
+    const [dx, dz] = DIR_VECTORS[dir & 3];
+    const d = new Vector3(dx, 0, dz);
+    const axisY = d.clone().addScaledVector(up, rise).normalize();
+    let normal = up.clone().addScaledVector(d, -rise).normalize();
+    let axisX = new Vector3().crossVectors(axisY, normal);
+    const cy = rampDisplayHeight(piece, cx, cz) ?? g.y * TILE_H + TILE_H / 2;
+    if (viewer.y < cy - 1) {
+      normal = normal.negate();
+      axisX = axisX.negate();
+    }
+    const alongZ = (dir & 1) === 0;
+    const extAlong = alongZ ? zb - za : xb - xa;
+    const extSide = alongZ ? xb - xa : zb - za;
+    const arrowDir = arrows.get(cell);
+    out.push({
+      center: new Vector3(cx, cy, cz),
+      axisX,
+      axisY,
+      normal,
+      width: extSide,
+      height: extAlong * Math.hypot(1, rise),
+      hidden: cell === 4,
+      gray: dragging ? !path.includes(cell) : !rampCellActive(piece.editMask, cell),
+      arrow: arrowDir === undefined ? undefined : new Vector3(DIR_VECTORS[arrowDir][0], 0, DIR_VECTORS[arrowDir][1]),
+    });
   }
   return out;
 }
