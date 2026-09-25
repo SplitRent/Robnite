@@ -798,7 +798,7 @@ export class GameClient {
         unlimitedMaterials: h.unlimitedMaterials,
         buildMaterial: h.buildMaterial,
         buildPiece: h.buildPiece,
-        buildInvalidReason: target && !target.valid ? target.reason : '',
+        buildInvalidReason: target && !target.valid && target.reason !== 'Blocked by existing structure' ? target.reason : '',
         editing: this.buildCtl.editing,
         alive: m.aliveCount,
         eliminations: h.stats.eliminations,

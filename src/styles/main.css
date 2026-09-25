@@ -622,3 +622,10 @@ button { font-family: inherit; color: inherit; }
   .hdr-level { display: none; }
   .page-play { width: min(560px, 60vw); }
 }
+
+/* Full-page tabs dim the 3D backdrop for readability. */
+.lobby[data-tab='battlepass']::before, .lobby[data-tab='shop']::before, .lobby[data-tab='quests']::before, .lobby[data-tab='career']::before, .lobby[data-tab='settings']::before { background: linear-gradient(90deg, rgba(5, 9, 18, 0.9), rgba(5, 9, 18, 0.72) 60%, rgba(5, 9, 18, 0.45)); }
+.lobby[data-tab='locker']::before { background: linear-gradient(90deg, rgba(5, 9, 18, 0.85), rgba(5, 9, 18, 0.2) 45%, rgba(5, 9, 18, 0.2) 70%, rgba(5, 9, 18, 0.8)); }
+.shop-grid.featured + .section-title { margin-top: 26px; }
+.bp-level { display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+.bp-level-num { flex-direction: row; align-items: baseline; gap: 8px; }

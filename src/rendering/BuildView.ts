@@ -219,10 +219,10 @@ export class BuildView {
     this.ghostEdges.renderOrder = 6;
     this.ghostEdges.visible = false;
     this.group.add(this.ghost, this.ghostEdges);
-    this.tileOn = new MeshBasicMaterial({ color: 0x5ee7ff, transparent: true, opacity: 0.28, depthWrite: false, side: DoubleSide });
-    this.tileOnHover = new MeshBasicMaterial({ color: 0xbff8ff, transparent: true, opacity: 0.5, depthWrite: false, side: DoubleSide });
-    this.tileOff = new MeshBasicMaterial({ color: 0xff5a5a, transparent: true, opacity: 0.12, depthWrite: false, side: DoubleSide, blending: AdditiveBlending });
-    this.tileHover = new MeshBasicMaterial({ color: 0xff8a8a, transparent: true, opacity: 0.35, depthWrite: false, side: DoubleSide });
+    this.tileOn = new MeshBasicMaterial({ color: 0x5ee7ff, transparent: true, opacity: 0.38, depthWrite: false, depthTest: false, side: DoubleSide });
+    this.tileOnHover = new MeshBasicMaterial({ color: 0xbff8ff, transparent: true, opacity: 0.62, depthWrite: false, depthTest: false, side: DoubleSide });
+    this.tileOff = new MeshBasicMaterial({ color: 0xff5a5a, transparent: true, opacity: 0.22, depthWrite: false, depthTest: false, side: DoubleSide, blending: AdditiveBlending });
+    this.tileHover = new MeshBasicMaterial({ color: 0xff8a8a, transparent: true, opacity: 0.45, depthWrite: false, depthTest: false, side: DoubleSide });
     this.tileGeoWall = new PlaneGeometry(TILE / 3 - 0.08, TILE_H / 3 - 0.08);
     this.tileGeoQuad = new PlaneGeometry(TILE / 2 - 0.1, TILE / 2 - 0.1);
     this.editGroup.visible = false;

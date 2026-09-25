@@ -55,6 +55,14 @@ export class MapRenderer {
       r.points.forEach(([x, z], i) => (i ? ctx.lineTo(toPx(x), toPx(z)) : ctx.moveTo(toPx(x), toPx(z))));
       ctx.stroke();
     }
+    // Training stations / pads
+    if (map.id === 'training_grounds') {
+      ctx.fillStyle = 'rgba(42,53,66,0.9)';
+      for (const p of map.pois) {
+        const s = (14 / (map.half * 2)) * size;
+        ctx.fillRect(toPx(p.x) - s / 2, toPx(p.z) - s / 2, s, s);
+      }
+    }
     // Buildings
     ctx.fillStyle = 'rgba(230,225,215,0.9)';
     for (const b of map.boxes) {
@@ -121,7 +129,7 @@ export class MapRenderer {
       ctx.fill();
     }
     if (opts.labels) {
-      ctx.font = `700 ${Math.max(10, Math.min(15, w / 50))}px Inter, system-ui, sans-serif`;
+      ctx.font = `700 ${Math.max(9, Math.min(15, w / 50))}px Inter, system-ui, sans-serif`;
       ctx.textAlign = 'center';
       for (const p of map.pois) {
         if (p.lootValue === 0 && map.id !== 'training_grounds') continue;

@@ -57,6 +57,12 @@ export class ShopPage implements Page {
     const grid = h('div', { class: `shop-grid ${this.section === 'featured' ? 'featured' : ''}` });
     for (const item of items) grid.appendChild(this.card(item));
     this.body.appendChild(grid);
+    if (this.section === 'featured') {
+      // The storefront also previews today's daily items under the featured ones.
+      const daily = h('div', { class: 'shop-grid' });
+      for (const item of rot.sections.daily) daily.appendChild(this.card(item));
+      this.body.append(h('h2', { class: 'section-title' }, 'DAILY'), daily);
+    }
   }
 
   private card(item: CosmeticItem): HTMLElement {

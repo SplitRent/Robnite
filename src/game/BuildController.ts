@@ -62,7 +62,8 @@ export class BuildController {
     const t = computeBuildTarget(this.match.world.collision, { origin: ray.origin, dir: ray.dir, eye, piece: h.buildPiece, userRotation: h.buildRotation, pieceInfo: this.pieceInfo });
     this.match.builds.check(t, h);
     this.target = t;
-    this.view.showGhost(t);
+    // Aiming at a slot that is already built: show nothing over the real piece.
+    this.view.showGhost(t.reason === 'Blocked by existing structure' ? null : t);
   }
 
   /** Place on click, and keep placing while held whenever the target changes. */
@@ -156,7 +157,8 @@ export class BuildController {
     if (fire.pressed && e.hover >= 0) {
       e.dragMode = e.selection.has(e.hover) ? 'remove' : 'add';
     }
-    if (fire.held && e.dragMode && e.hover >= 0) {
+    // Apply on the press itself too (a click can press and release within one frame).
+    if ((fire.held || fire.pressed) && e.dragMode && e.hover >= 0) {
       const had = e.selection.has(e.hover);
       if (e.dragMode === 'add' && !had) e.selection.add(e.hover);
       if (e.dragMode === 'remove' && had) e.selection.delete(e.hover);

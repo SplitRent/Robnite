@@ -31,7 +31,9 @@ export function buildDuelArena(): MapData {
   for (const [sx, sz] of [[-34, 0], [34, 0]]) {
     b.spawns.push([sx, sz]);
     const g = b.ground(sx, sz);
-    b.deco('cyl', [sx, g + 0.05, sz], [3.2, 0.1, 3.2], 0x2bd6ff, [0, 0, 0], { emissive: true, segments: 24 });
+    b.deco('cyl', [sx, g + 0.05, sz], [3.2, 0.1, 3.2], 0x1f4f63, [0, 0, 0], { segments: 24 });
+    b.deco('cyl', [sx, g + 0.11, sz], [3.25, 0.02, 3.25], 0x5ee7ff, [0, 0, 0], { emissive: true, segments: 24 });
+    b.deco('cyl', [sx, g + 0.12, sz], [3.0, 0.03, 3.0], 0x1f4f63, [0, 0, 0], { segments: 24 });
     for (const [bx0, bz0, bx1, bz1] of [[-3, -3, 3, -2.8], [-3, 2.8, 3, 3], [-3, -3, -2.8, 3], [2.8, -3, 3, 3]]) {
       b.barriers.push({ min: [sx + bx0, g - 1, sz + bz0], max: [sx + bx1, g + 4, sz + bz1], color: 0x5ee7ff, collide: true, material: 'glass', glass: true });
     }

@@ -57,6 +57,7 @@ export class WorldView {
   private chestLids: { lid: Object3D; glow: Mesh; opened: boolean }[] = [];
   private lightPool: PointLight[] = [];
   private water: Mesh | null = null;
+  private barrierMesh: Mesh | null = null;
   private disposables: { dispose(): void }[] = [];
 
   constructor(readonly state: WorldState, readonly opts: WorldViewOptions) {
@@ -204,7 +205,7 @@ export class WorldView {
       return ch;
     };
     const ao = this.opts.ambientOcclusion ? 0.35 : 0;
-    for (const b of [...map.boxes, ...map.barriers]) {
+    for (const b of map.boxes) {
       if (b.color < 0) continue;
       const cx = (b.min[0] + b.max[0]) / 2;
       const cz = (b.min[2] + b.max[2]) / 2;
@@ -259,6 +260,14 @@ export class WorldView {
       }
     }
     for (const t of Object.values(templates)) t.dispose();
+    // Spawn barriers: separate mesh so they can be hidden when lowered.
+    const bar = mergeAll(map.barriers.map((b) => boxGeometry(b.min, b.max, b.color)));
+    if (bar) {
+      this.barrierMesh = new Mesh(bar, this.mats.track(new MeshBasicMaterial({ color: 0x5ee7ff, transparent: true, opacity: 0.18, depthWrite: false })));
+      this.barrierMesh.renderOrder = 2;
+      this.group.add(this.barrierMesh);
+      this.disposables.push(bar);
+    }
   }
 
   private buildRoofs(map: MapData): void {
@@ -606,6 +615,7 @@ export class WorldView {
         l.distance = s.distance;
       });
     }
+    if (this.barrierMesh) this.barrierMesh.visible = this.state.barrierColliders.some((c) => c.enabled);
     if (this.water) {
       const m = this.water.material as MeshStandardMaterial;
       m.opacity = 0.76 + Math.sin(time * 0.8) * 0.03;
