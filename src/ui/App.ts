@@ -528,8 +528,16 @@ export class App implements AppContext {
     this.closePause();
     this.client?.setPaused(false);
     this.input.enabled = true;
-    void this.input.lock();
     this.render.canvas.focus();
+    void this.input.lock().then(() => {
+      // Browsers refuse to re-lock right after Esc; keep the match paused and ask for a click.
+      setTimeout(() => {
+        if (this.screen === 'match' && this.client && !this.client.isEnded && !this.input.locked && !this.pauseEl) {
+          this.client.setPaused(true);
+          this.showClickToPlay();
+        }
+      }, 250);
+    });
   }
 
   private onPointerUnlock(): void {
