@@ -1,5 +1,4 @@
 import {
-  AdditiveBlending,
   BoxGeometry,
   BufferGeometry,
   DoubleSide,
@@ -8,6 +7,7 @@ import {
   Group,
   LineBasicMaterial,
   LineSegments,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
@@ -179,6 +179,15 @@ interface PieceVisual {
   born: number;
 }
 
+export interface EditTile {
+  center: Vector3;
+  axisX: Vector3;
+  axisY: Vector3;
+  normal: Vector3;
+  width: number;
+  height: number;
+}
+
 const MATERIAL_TINT: Record<BuildMaterial, number> = { wood: 0xffffff, stone: 0xffffff, metal: 0xffffff };
 
 /** Renders placed build pieces, the ghost preview and the edit grid. */
@@ -200,8 +209,7 @@ export class BuildView {
   private tileOff: MeshBasicMaterial;
   private tileHover: MeshBasicMaterial;
   private tileOnHover: MeshBasicMaterial;
-  private tileGeoWall: PlaneGeometry;
-  private tileGeoQuad: PlaneGeometry;
+  private tileGeoUnit: PlaneGeometry;
   private time = 0;
 
   constructor(private shadows: boolean) {
@@ -219,12 +227,11 @@ export class BuildView {
     this.ghostEdges.renderOrder = 6;
     this.ghostEdges.visible = false;
     this.group.add(this.ghost, this.ghostEdges);
-    this.tileOn = new MeshBasicMaterial({ color: 0x5ee7ff, transparent: true, opacity: 0.38, depthWrite: false, depthTest: false, side: DoubleSide });
-    this.tileOnHover = new MeshBasicMaterial({ color: 0xbff8ff, transparent: true, opacity: 0.62, depthWrite: false, depthTest: false, side: DoubleSide });
-    this.tileOff = new MeshBasicMaterial({ color: 0xff5a5a, transparent: true, opacity: 0.22, depthWrite: false, depthTest: false, side: DoubleSide, blending: AdditiveBlending });
-    this.tileHover = new MeshBasicMaterial({ color: 0xff8a8a, transparent: true, opacity: 0.45, depthWrite: false, depthTest: false, side: DoubleSide });
-    this.tileGeoWall = new PlaneGeometry(TILE / 3 - 0.08, TILE_H / 3 - 0.08);
-    this.tileGeoQuad = new PlaneGeometry(TILE / 2 - 0.1, TILE / 2 - 0.1);
+    this.tileOn = new MeshBasicMaterial({ color: 0xbfeaff, transparent: true, opacity: 0.35, depthWrite: false, depthTest: false, side: DoubleSide });
+    this.tileOnHover = new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, depthWrite: false, depthTest: false, side: DoubleSide });
+    this.tileOff = new MeshBasicMaterial({ color: 0x2f8cff, transparent: true, opacity: 0.7, depthWrite: false, depthTest: false, side: DoubleSide });
+    this.tileHover = new MeshBasicMaterial({ color: 0x5aa8ff, transparent: true, opacity: 0.85, depthWrite: false, depthTest: false, side: DoubleSide });
+    this.tileGeoUnit = new PlaneGeometry(1, 1);
     this.editGroup.visible = false;
     this.group.add(this.editGroup);
   }
@@ -316,46 +323,37 @@ export class BuildView {
   // ------------------------------------------------------------- edit grid
 
   /**
-   * Show the edit grid over a piece. `removed` are selected (to be removed)
-   * tiles, `hover` is the tile under the crosshair, `viewer` is used to push
-   * wall tiles toward the player's side.
+   * Show the edit grid. Each tile is a quad laid on the piece surface
+   * (`axisX`/`axisY` span the tile, `normal` faces the player). `selected`
+   * tiles are the ones the player has picked (removed for walls/floors/cones,
+   * the drag path for ramps); `hover` is the tile under the crosshair.
    */
-  showEditGrid(piece: BuildPiece | null, centers: Vector3[], removed: Set<number>, hover: number, viewer: Vector3): void {
+  showEditGrid(piece: BuildPiece | null, tiles: EditTile[], selected: Set<number>, hover: number): void {
     if (!piece) {
       this.editGroup.visible = false;
       return;
     }
     this.editGroup.visible = true;
-    while (this.editTiles.length < centers.length) {
-      const m = new Mesh(this.tileGeoWall, this.tileOn);
+    while (this.editTiles.length < tiles.length) {
+      const m = new Mesh(this.tileGeoUnit, this.tileOn);
       m.renderOrder = 7;
       this.editTiles.push(m);
       this.editGroup.add(m);
     }
+    const basis = new Matrix4();
     this.editTiles.forEach((m, i) => {
-      if (i >= centers.length) {
+      const t = tiles[i];
+      if (!t) {
         m.visible = false;
         return;
       }
       m.visible = true;
-      const c = centers[i];
-      m.position.copy(c);
-      if (piece.type === 'wall') {
-        m.geometry = this.tileGeoWall;
-        if ((piece.rotation & 1) === 0) {
-          m.rotation.set(0, Math.PI / 2, 0);
-          m.position.x += viewer.x > c.x ? 0.13 : -0.13;
-        } else {
-          m.rotation.set(0, 0, 0);
-          m.position.z += viewer.z > c.z ? 0.13 : -0.13;
-        }
-      } else {
-        m.geometry = this.tileGeoQuad;
-        m.rotation.set(-Math.PI / 2, 0, 0);
-        m.position.y += viewer.y > c.y ? 0.14 : -0.14;
-      }
-      const isRemoved = removed.has(i);
-      m.material = isRemoved ? (i === hover ? this.tileHover : this.tileOff) : i === hover ? this.tileOnHover : this.tileOn;
+      basis.makeBasis(t.axisX, t.axisY, t.normal);
+      m.quaternion.setFromRotationMatrix(basis);
+      m.position.copy(t.center).addScaledVector(t.normal, 0.08);
+      m.scale.set(t.width - 0.1, t.height - 0.1, 1);
+      const isSel = selected.has(i);
+      m.material = isSel ? (i === hover ? this.tileHover : this.tileOff) : i === hover ? this.tileOnHover : this.tileOn;
     });
   }
 
@@ -374,8 +372,7 @@ export class BuildView {
     this.tileOff.dispose();
     this.tileHover.dispose();
     this.tileOnHover.dispose();
-    this.tileGeoWall.dispose();
-    this.tileGeoQuad.dispose();
+    this.tileGeoUnit.dispose();
     this.group.removeFromParent();
   }
 }
