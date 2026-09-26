@@ -1,5 +1,5 @@
 import { Vector3 } from 'three';
-import { TILE, TILE_H } from '../core/constants';
+import { EYE_HEIGHT, TILE, TILE_H } from '../core/constants';
 import type { CollisionWorld, RayHit } from '../physics/collision';
 import { faceLabel, lookDirIndex, slotKey, type BuildPieceType, type GridCoordinate, type Vec3Like } from './grid';
 
@@ -30,7 +30,7 @@ export interface TargetInput {
   dir: Vec3Like;
   /** Player eye position — used to skip geometry between camera and player. */
   eye: Vec3Like;
-  /** Player feet position (defaults to 1.6 m below the eye). Walls are placed relative to it. */
+  /** Player feet position (defaults to EYE_HEIGHT below the eye). Walls are placed relative to it. */
   feet?: Vec3Like;
   piece: BuildPieceType;
   /** Extra quarter turns chosen with the rotate key. */
@@ -43,6 +43,8 @@ export interface TargetInput {
 export const BUILD_REACH = TILE * 1.4;
 /** @deprecated kept for callers; equals BUILD_REACH. */
 export const AIR_TARGET_DISTANCE = BUILD_REACH;
+/** sin(15°): looking further down than this triggers the high-wall rule. */
+const HIGH_WALL_SIN = Math.sin((15 * Math.PI) / 180);
 /** A wall line closer than this to the player is skipped (it would go through them). */
 const WALL_MIN_GAP = 0.45;
 
@@ -84,7 +86,7 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
 
   const look = lookDirIndex(d.x, d.z);
   const piece = input.piece;
-  const feet = input.feet ?? { x: input.eye.x, y: input.eye.y - 1.6, z: input.eye.z };
+  const feet = input.feet ?? { x: input.eye.x, y: input.eye.y - EYE_HEIGHT, z: input.eye.z };
   const feetLevel = Math.floor((feet.y + 0.1) / TILE_H);
   const pcx = Math.floor(feet.x / TILE);
   const pcz = Math.floor(feet.z / TILE);
@@ -116,6 +118,19 @@ export function computeBuildTarget(world: CollisionWorld, input: TargetInput): B
       grid = rotation === 0
         ? { x: lineAhead(feet.x, cellX, d.x > 0), y: 0, z: cellZ }
         : { x: cellX, y: 0, z: lineAhead(feet.z, cellZ, d.z > 0) };
+      // High wall: standing within half a tile of that line and looking down
+      // more than 15° skips it and puts the wall on the far line of the next
+      // cell (only for the wall facing the way you look, not a rotated one).
+      const facing = rotation === (alongX ? 0 : 1);
+      if (facing && d.y < -HIGH_WALL_SIN) {
+        const axisPos = rotation === 0 ? feet.x : feet.z;
+        const line = rotation === 0 ? grid.x : grid.z;
+        const positive = rotation === 0 ? d.x > 0 : d.z > 0;
+        if (Math.abs(line * TILE - axisPos) < TILE / 2) {
+          if (rotation === 0) grid.x += positive ? 1 : -1;
+          else grid.z += positive ? 1 : -1;
+        }
+      }
       // Level: where the crosshair ray crosses the wall plane, within one level of the feet.
       const plane = rotation === 0 ? grid.x * TILE : grid.z * TILE;
       const oa = rotation === 0 ? o.x : o.z;

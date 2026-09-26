@@ -353,6 +353,9 @@ export interface EditTile {
   arrow?: Vector3;
 }
 
+/** Seconds an edit takes to animate (Fortnite edits are quick but visible). */
+const EDIT_ANIM_TIME = 0.16;
+
 const MATERIAL_TINT: Record<BuildMaterial, number> = { wood: 0xffffff, stone: 0xffffff, metal: 0xffffff };
 
 /** Renders placed build pieces, the ghost preview and the edit grid. */
@@ -370,6 +373,7 @@ export class BuildView {
   // Edit grid
   private editGroup = new Group();
   private editTiles: Mesh[] = [];
+  private editFx: { mesh: Mesh; mat: MeshStandardMaterial; start: number; origin: Vector3; centre: Vector3 }[] = [];
   private editEdges: LineLoop[] = [];
   private edgeMat = new LineBasicMaterial({ color: 0xe8f8ff, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
   private tileOn: MeshBasicMaterial;
@@ -423,9 +427,41 @@ export class BuildView {
     const v = this.visuals.get(piece.id);
     if (!v) return;
     if (v.mask !== piece.editMask || v.rampDir !== piece.rampDir) {
+      this.animateEdit(piece, v);
       v.mesh.geometry = pieceGeometry(piece.type, piece.rotation, piece.editMask, piece.rampDir);
       v.mask = piece.editMask;
       v.rampDir = piece.rampDir;
+      v.born = this.time; // the new shape pops in
+    }
+  }
+
+  /**
+   * Edits animate instead of snapping: tiles cut from walls and floors shrink
+   * into themselves and fade; a ramp or cone (or a triangle-cut wall)
+   * reshaping fades its old shape out while the new one pops in.
+   */
+  private animateEdit(piece: BuildPiece, v: PieceVisual): void {
+    const origin = cellOrigin(piece.grid);
+    const spawn = (geo: BufferGeometry) => {
+      const mat = v.material.clone();
+      mat.transparent = true;
+      mat.depthWrite = false;
+      const mesh = new Mesh(geo, mat);
+      mesh.position.copy(origin);
+      if (!geo.boundingBox) geo.computeBoundingBox();
+      const centre = geo.boundingBox!.getCenter(new Vector3()).add(origin);
+      this.group.add(mesh);
+      this.editFx.push({ mesh, mat, start: this.time, origin, centre });
+    };
+    const oldMask = v.mask;
+    const tiles = piece.type === 'wall' ? 9 : piece.type === 'floor' ? 4 : 0;
+    const triangle = piece.type === 'wall' && (wallTriangleCorner(oldMask) >= 0 || wallTriangleCorner(piece.editMask) >= 0);
+    if (tiles && !triangle) {
+      for (let i = 0; i < tiles; i++) {
+        if (oldMask & (1 << i) && !(piece.editMask & (1 << i))) spawn(pieceGeometry(piece.type, piece.rotation, 1 << i, 0));
+      }
+    } else {
+      spawn(pieceGeometry(piece.type, piece.rotation, oldMask, v.rampDir));
     }
   }
 
@@ -437,9 +473,24 @@ export class BuildView {
     this.visuals.delete(pieceId);
   }
 
-  /** Per-frame: health tint, build-in shimmer and placement pop. */
+  /** Per-frame: health tint, build-in shimmer, placement pop and edit animations. */
   update(time: number, pieces: Map<number, BuildPiece>): void {
     this.time = time;
+    this.editFx = this.editFx.filter((f) => {
+      const k = Math.min(1, (time - f.start) / EDIT_ANIM_TIME);
+      if (k >= 1) {
+        f.mesh.removeFromParent();
+        f.mat.dispose();
+        return false;
+      }
+      // Ease out: shrink toward the tile's centre while fading.
+      const e = 1 - (1 - k) * (1 - k);
+      const scale = 1 - e * 0.8;
+      f.mesh.scale.setScalar(scale);
+      f.mesh.position.set(f.centre.x + (f.origin.x - f.centre.x) * scale, f.centre.y + (f.origin.y - f.centre.y) * scale, f.centre.z + (f.origin.z - f.centre.z) * scale);
+      f.mat.opacity = 1 - e;
+      return true;
+    });
     for (const [id, v] of this.visuals) {
       const p = pieces.get(id);
       if (!p) continue;
@@ -583,6 +634,11 @@ export class BuildView {
     this.tileOff.dispose();
     this.tileHover.dispose();
     this.tileOnHover.dispose();
+    for (const f of this.editFx) {
+      f.mesh.removeFromParent();
+      f.mat.dispose();
+    }
+    this.editFx = [];
     for (const m of this.editTiles) m.geometry.dispose();
     for (const e of this.editEdges) e.geometry.dispose();
     this.edgeMat.dispose();
