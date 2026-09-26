@@ -105,9 +105,13 @@ export class CameraController {
       const effShoulder = sHit ? Math.max(0, sHit.t - 0.2) : shoulder;
       const origin = new Vector3(this.pivot.x + rx * effShoulder, sy, this.pivot.z + rz * effShoulder);
       const back = new Vector3(-fx, -fy, -fz);
+      // Like Fortnite: the camera never passes through builds or the world.
+      // Backed against a wall or stair it slides in along the view line
+      // (almost first person) and stays there while blocked, then springs
+      // back out as soon as the way is clear.
       const hit = opts.world.raycast(origin, back, wantDist + 0.3, {});
-      if (hit) dist = Math.max(0.3, hit.t - 0.25);
-      this.currentDist = dist < this.currentDist ? dist : damp(this.currentDist, dist, 8, dt);
+      if (hit) dist = Math.max(0.12, hit.t - 0.22);
+      this.currentDist = dist < this.currentDist ? dist : damp(this.currentDist, dist, 14, dt);
       this.camera.position.set(origin.x - fx * this.currentDist, origin.y - fy * this.currentDist, origin.z - fz * this.currentDist);
     } else {
       this.currentDist = dist;

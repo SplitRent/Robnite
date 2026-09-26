@@ -22,6 +22,8 @@ export interface MoveResult {
 const SURFACE_TOP_TOLERANCE = 0.6;
 const SUBSTEP = 0.2;
 const SNAP_DOWN = 0.45;
+/** How far a slab edge may overlap the top of the head without blocking. */
+const HEAD_ROUNDING = 0.22;
 
 const scratch: Collider[] = [];
 const prev = new Vector3();
@@ -35,6 +37,22 @@ function setBodyBox(p: Vector3, r: number, h: number, pad = 0) {
   qbox.minY = p.y + 0.01;
   qbox.maxY = p.y + h;
   return qbox;
+}
+
+/**
+ * Whether a box can hold the character up: like a rounded capsule, the
+ * centre must be over (or within a little of) the box, so you slide off
+ * edges — e.g. a wall top under an edited floor — instead of perching on them.
+ */
+function supports(b: { minX: number; maxX: number; minZ: number; maxZ: number }, p: Vector3, r: number): boolean {
+  const dx = Math.max(b.minX - p.x, 0, p.x - b.maxX);
+  const dz = Math.max(b.minZ - p.z, 0, p.z - b.maxZ);
+  return dx * dx + dz * dz <= (r * 0.45) * (r * 0.45);
+}
+
+/** Thin pieces (wall tops) are never stepped up onto. */
+function stepable(b: { minX: number; maxX: number; minZ: number; maxZ: number }): boolean {
+  return b.maxX - b.minX > 0.5 && b.maxZ - b.minZ > 0.5;
 }
 
 function overlapsXZ(c: Collider, p: Vector3, r: number): boolean {
@@ -85,6 +103,8 @@ export function moveCharacter(world: CollisionWorld, body: CharacterBody, dt: nu
     }
   }
 
+  pushOutOfBoxes(world, body);
+
   // Terrain.
   const th = world.terrainHeight(pos.x, pos.z);
   if (pos.y <= th) {
@@ -125,21 +145,30 @@ function resolveHorizontal(world: CollisionWorld, body: CharacterBody, axis: 'x'
       const b = c.box;
       if (!(pos.x + r > b.minX && pos.x - r < b.maxX && pos.z + r > b.minZ && pos.z - r < b.maxZ)) continue;
       if (!(pos.y + h > b.minY && pos.y + 0.01 < b.maxY)) continue;
+      // Rounded head: the top of the head may slip under the edge of a thin
+      // slab (e.g. walking down a ramp under an edited floor).
+      if (b.maxY - b.minY <= SLAB + 0.02 && pos.y + h - b.minY <= HEAD_ROUNDING && b.minY > pos.y + h * 0.5) continue;
       const rise = b.maxY - pos.y;
-      if (canStep && rise > 0 && rise <= STEP_HEIGHT) {
+      if (canStep && rise > 0 && rise <= STEP_HEIGHT && stepable(b)) {
         const raised = new Vector3(pos.x, b.maxY + 0.001, pos.z);
         if (!bodyBlocked(world, raised, r, h)) {
           pos.y = b.maxY + 0.001;
           continue;
         }
       }
+      // Only block if moving along this axis is what caused the overlap;
+      // an overlap that already existed on this axis (e.g. dropping past a
+      // floor edge) is resolved by the shortest push afterwards, never by
+      // shoving the character across the whole piece.
+      const lo = axis === 'x' ? b.minX : b.minZ;
+      const hi = axis === 'x' ? b.maxX : b.maxZ;
+      const pc = axis === 'x' ? prevPos.x : prevPos.z;
+      if (pc + r > lo && pc - r < hi) continue;
       if (axis === 'x') {
-        const centre = (b.minX + b.maxX) * 0.5;
-        pos.x = prevPos.x < centre ? b.minX - r - 1e-4 : b.maxX + r + 1e-4;
+        pos.x = pc <= lo - r ? lo - r - 1e-4 : hi + r + 1e-4;
         vel.x = 0;
       } else {
-        const centre = (b.minZ + b.maxZ) * 0.5;
-        pos.z = prevPos.z < centre ? b.minZ - r - 1e-4 : b.maxZ + r + 1e-4;
+        pos.z = pc <= lo - r ? lo - r - 1e-4 : hi + r + 1e-4;
         vel.z = 0;
       }
       blocked = true;
@@ -183,8 +212,12 @@ function resolveVertical(world: CollisionWorld, body: CharacterBody, prevPos: Ve
       const b = c.box;
       if (!overlapsXZ(c, pos, r)) continue;
       if (dy <= 0 && prevPos.y >= b.maxY - 0.03 && pos.y < b.maxY) {
-        pos.y = b.maxY;
-        landed = true;
+        // Land only with the centre over it; otherwise keep falling and let
+        // the horizontal pass slide the character off the edge.
+        if (supports(b, pos, r)) {
+          pos.y = b.maxY;
+          landed = true;
+        }
       } else if (dy > 0 && prevPos.y + h <= b.minY + 0.03 && pos.y + h > b.minY) {
         pos.y = b.minY - h;
         ceiling = true;
@@ -192,7 +225,7 @@ function resolveVertical(world: CollisionWorld, body: CharacterBody, prevPos: Ve
         // Penetrating (a floor was built at our feet): pop out on top. Tall
         // pieces (walls) only by a step, so you can't hop onto wall tops.
         const slab = b.maxY - b.minY <= SLAB + 0.02;
-        if (b.maxY - pos.y < (slab ? 0.7 : STEP_HEIGHT)) {
+        if (b.maxY - pos.y < (slab ? 0.7 : STEP_HEIGHT) && supports(b, pos, r)) {
           pos.y = b.maxY;
           landed = true;
         }
@@ -214,6 +247,33 @@ function resolveVertical(world: CollisionWorld, body: CharacterBody, prevPos: Ve
     }
   }
   return { landed, ceiling };
+}
+
+/**
+ * Any box still overlapping the body sideways (e.g. an edge dropped past) is
+ * resolved by the shortest horizontal push, at most about a radius.
+ */
+function pushOutOfBoxes(world: CollisionWorld, body: CharacterBody): void {
+  const { pos, radius: r, height: h } = body;
+  const list = world.query(setBodyBox(pos, r, h), scratch).slice();
+  for (const c of list) {
+    if (c.kind !== 'box') continue;
+    const b = c.box;
+    if (!(pos.x + r > b.minX && pos.x - r < b.maxX && pos.z + r > b.minZ && pos.z - r < b.maxZ)) continue;
+    if (!(pos.y + h > b.minY && pos.y + 0.01 < b.maxY)) continue;
+    if (b.maxY - b.minY <= SLAB + 0.02 && pos.y + h - b.minY <= HEAD_ROUNDING && b.minY > pos.y + h * 0.5) continue;
+    const pushes: [number, 'x' | 'z'][] = [
+      [b.minX - r - 1e-4 - pos.x, 'x'],
+      [b.maxX + r + 1e-4 - pos.x, 'x'],
+      [b.minZ - r - 1e-4 - pos.z, 'z'],
+      [b.maxZ + r + 1e-4 - pos.z, 'z'],
+    ];
+    pushes.sort((a, b2) => Math.abs(a[0]) - Math.abs(b2[0]));
+    const [d, axis] = pushes[0];
+    if (Math.abs(d) > r + 0.1) continue;
+    if (axis === 'x') pos.x += d;
+    else pos.z += d;
+  }
 }
 
 /** Deepest a slope may catch the feet and still lift the character onto it. */
@@ -256,7 +316,7 @@ export function groundBelow(world: CollisionWorld, pos: Vector3, r: number, h: n
   const list = world.query(qbox, scratch);
   for (const c of list) {
     let top: number | null;
-    if (c.kind === 'box') top = c.box.maxY;
+    if (c.kind === 'box') top = supports(c.box, pos, r) ? c.box.maxY : null;
     else top = c.height(pos.x, pos.z);
     if (top === null) continue;
     if (top <= pos.y + 0.02 && pos.y - top <= maxDown) {

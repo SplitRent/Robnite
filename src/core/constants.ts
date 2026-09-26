@@ -18,11 +18,15 @@ export const SIM_DT = 1 / 60;
 /** Maximum simulation steps processed per rendered frame (spiral-of-death guard). */
 export const MAX_SIM_STEPS = 6;
 
-export const PLAYER_RADIUS = 0.38;
-export const PLAYER_HEIGHT = 1.8;
-export const PLAYER_CROUCH_HEIGHT = 1.25;
-export const EYE_HEIGHT = 1.6;
-export const CROUCH_EYE_HEIGHT = 1.1;
+/**
+ * Player capsule. Slightly under half a wall tall (like Fortnite) and slim,
+ * so players fit through edited floors above ramps and 1-tile openings.
+ */
+export const PLAYER_RADIUS = 0.32;
+export const PLAYER_HEIGHT = 1.62;
+export const PLAYER_CROUCH_HEIGHT = 1.12;
+export const EYE_HEIGHT = 1.42;
+export const CROUCH_EYE_HEIGHT = 0.95;
 
 export const GRAVITY = 24;
 export const JUMP_SPEED = 8.4;
@@ -54,8 +58,14 @@ export const MAX_SHIELD = 100;
 
 /** Max distance from player centre to the centre of a build piece. */
 export const BUILD_RANGE = 12;
-/** Max distance for entering edit mode on a piece. */
-export const EDIT_RANGE = 9;
+/** Max distance (player → piece centre) the server accepts an edit from. */
+export const EDIT_RANGE = TILE * 2.4;
+/**
+ * Edit reach along the crosshair from the eye, like Fortnite: short with a
+ * weapon or pickaxe out (~1 tile), longer with a build piece out (~2 tiles).
+ */
+export const EDIT_REACH_COMBAT = TILE * 1.15;
+export const EDIT_REACH_BUILD = TILE * 1.9;
 export const INTERACT_RANGE = 3.2;
 
 export const MATERIAL_CAP = 999;

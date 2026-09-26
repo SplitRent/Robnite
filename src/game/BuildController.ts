@@ -1,5 +1,5 @@
 import { Vector3 } from 'three';
-import { SLAB, TILE, TILE_H } from '../core/constants';
+import { EDIT_REACH_BUILD, EDIT_REACH_COMBAT, SLAB, TILE, TILE_H } from '../core/constants';
 import { computeBuildTarget, type BuildTarget } from '../building/targeting';
 import { DIR_VECTORS, FULL_QUAD_MASK, RAMP_SPIRAL, rampSurfaceHeight } from '../building/grid';
 import { rampCellActive, rampCellRange, removedTiles, selectionToEdit, tileAt } from '../building/edits';
@@ -91,22 +91,34 @@ export class BuildController {
 
   /** The player's own build piece under the crosshair (within edit range), if any. */
   pieceUnderCrosshair(ray: CameraRay): BuildPiece | null {
-    const eye = this.human.eye(new Vector3());
-    const t0 = Math.max(0, eye.clone().sub(ray.origin).dot(ray.dir) - 0.25);
+    const h = this.human;
+    const builds = this.match.builds;
+    // Build mode: the piece in the slot your blueprint points at has priority
+    // (e.g. holding floor edits the floor you're aiming at).
+    const t = this.target;
+    if (h.buildPiece && t && t.reason === 'Blocked by existing structure') {
+      const p = builds.pieceByKey(t.key);
+      if (p && p.type === t.piece && builds.canEdit(p, h).valid) return p;
+    }
+    const eye = h.eye(new Vector3());
+    const toEye = eye.clone().sub(ray.origin).dot(ray.dir);
+    const t0 = Math.max(0, toEye - 0.25);
     const start = ray.origin.clone().addScaledVector(ray.dir, t0);
-    const hit = this.match.world.collision.raycast(start, ray.dir, 12, { includeTerrain: true });
-    const piece = this.match.builds.pieceFromCollider(hit?.collider);
-    if (!piece) return this.pieceByEditedOpening(start, ray.dir);
-    return this.match.builds.canEdit(piece, this.human).valid ? piece : null;
+    // Reach from the eye: ~1 tile with a weapon out, ~2 tiles in build mode.
+    const reach = Math.max(0, toEye - t0) + (h.buildPiece ? EDIT_REACH_BUILD : EDIT_REACH_COMBAT);
+    const hit = this.match.world.collision.raycast(start, ray.dir, reach, { includeTerrain: true });
+    const piece = builds.pieceFromCollider(hit?.collider);
+    if (!piece) return this.pieceByEditedOpening(start, ray.dir, hit ? hit.t : reach);
+    return builds.canEdit(piece, h).valid ? piece : null;
   }
 
   /**
    * Looking through a fully opened tile of an edited wall should still select
    * it: march the ray through the owner's pieces' bounds.
    */
-  private pieceByEditedOpening(start: Vector3, dir: Vector3): BuildPiece | null {
+  private pieceByEditedOpening(start: Vector3, dir: Vector3, maxT: number): BuildPiece | null {
     let best: BuildPiece | null = null;
-    let bestT = 9;
+    let bestT = maxT;
     for (const p of this.match.builds.pieces.values()) {
       if (p.ownerId !== this.human.id || !this.match.builds.isEdited(p)) continue;
       const b = p.bounds;

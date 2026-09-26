@@ -7,7 +7,7 @@ import {
   Scene,
   Vector3,
 } from 'three';
-import { MAX_SIM_STEPS, SIM_DT, EYE_HEIGHT } from '../core/constants';
+import { CROUCH_EYE_HEIGHT, EYE_HEIGHT, MAX_SIM_STEPS, PLAYER_HEIGHT, SIM_DT } from '../core/constants';
 import { logger } from '../core/log';
 import { dirFromYawPitch } from '../core/math';
 import type { RenderContext } from '../rendering/RenderContext';
@@ -261,6 +261,8 @@ export class GameClient {
     let m = this.models.get(c.id);
     if (!m) {
       m = new CharacterModel(c.cosmetics, this.settings.video.shadows !== 'off');
+      // The model is authored 1.8 m tall; match the gameplay capsule.
+      m.root.scale.setScalar(PLAYER_HEIGHT / 1.8);
       this.models.set(c.id, m);
       this.scene.add(m.root);
     }
@@ -598,7 +600,7 @@ export class GameClient {
     const w = focus.inventory.currentWeapon();
     const aiming = focus === h && h.input.aim && !!w && h.buildPiece === null;
     const scoped = aiming && !!w && WEAPONS[w.id].scoped;
-    this.camera.update(dt, pos, focus.crouching ? 1.15 : EYE_HEIGHT, {
+    this.camera.update(dt, pos, focus.crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT, {
       aiming,
       scoped,
       adsFov: w ? WEAPONS[w.id].adsFov : 1,
@@ -645,7 +647,7 @@ export class GameClient {
     for (const c of m.combatants) {
       const model = this.modelFor(c);
       const gone = !c.alive && m.time - c.deathTime > 2.2;
-      model.root.visible = c.air !== 'bus' && !gone && !(c === m.human && this.camera.camera.position.distanceTo(c.eye(tmp)) < 0.45);
+      model.root.visible = c.air !== 'bus' && !gone && !(c === m.human && this.camera.camera.position.distanceTo(c.eye(tmp)) < 0.6);
       if (!model.root.visible) continue;
       this.interpolated(c, alpha, model.root.position);
       model.root.rotation.y = c.yaw;

@@ -1,7 +1,7 @@
 import { Vector3 } from 'three';
 import type { Rng } from '../core/rng';
 import type { EventBus } from '../core/events';
-import { MATERIAL_CAP, MAX_HEALTH, MAX_SHIELD } from '../core/constants';
+import { MATERIAL_CAP, MAX_HEALTH, MAX_SHIELD, PLAYER_HEIGHT } from '../core/constants';
 import type { BuildSystem } from '../building/BuildSystem';
 import type { GameEvents, DamageSource } from '../game/events';
 import type { WorldState, ResourceNode } from '../game/WorldState';
@@ -101,17 +101,18 @@ export function rayCharacter(o: Vector3, d: Vector3, c: Combatant, maxT: number)
   const p = c.pos;
   let best = -1;
   let region: HitRegion = 'body';
-  const head = raySphere(o, d, p.x, p.y + c.height - 0.2, p.z, 0.23, maxT);
+  const hs = PLAYER_HEIGHT / 1.8;
+  const head = raySphere(o, d, p.x, p.y + c.height - 0.2 * hs, p.z, 0.23 * hs, maxT);
   if (head >= 0) {
     best = head;
     region = 'head';
   }
-  const torso = rayCylinder(o, d, p.x, p.z, 0.36, p.y + 0.85 * s, p.y + c.height - 0.42, maxT);
+  const torso = rayCylinder(o, d, p.x, p.z, 0.36 * hs, p.y + 0.85 * s, p.y + c.height - 0.42 * hs, maxT);
   if (torso >= 0 && (best < 0 || torso < best)) {
     best = torso;
     region = 'body';
   }
-  const legs = rayCylinder(o, d, p.x, p.z, 0.27, p.y, p.y + 0.85 * s, maxT);
+  const legs = rayCylinder(o, d, p.x, p.z, 0.27 * hs, p.y, p.y + 0.85 * s, maxT);
   if (legs >= 0 && (best < 0 || legs < best)) {
     best = legs;
     region = 'legs';

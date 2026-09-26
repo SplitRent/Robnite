@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import { flatWorld, targetFrom } from './helpers';
-import { TILE, TILE_H } from '../src/core/constants';
+import { EYE_HEIGHT, TILE, TILE_H } from '../src/core/constants';
 import { coneHeight, pieceBounds, FULL_WALL_MASK, RAMP_SPIRAL, rampSurfaceHeight, wallBoxes, wallTriangleCorner } from '../src/building/grid';
 import { WALL_PRESETS, FLOOR_PRESETS, selectionToEdit } from '../src/building/edits';
 import { makeTarget, computeBuildTarget } from '../src/building/targeting';
 import { moveCharacter } from '../src/physics/character';
 
 /** Pitch that makes the eye ray hit flat ground at horizontal distance d. */
-const pitchFor = (d: number) => -Math.atan2(1.6, d);
+const pitchFor = (d: number) => -Math.atan2(EYE_HEIGHT, d);
 
 describe('build targeting (crosshair → grid)', () => {
   it('is deterministic for identical inputs', () => {
@@ -35,17 +35,24 @@ describe('build targeting (crosshair → grid)', () => {
   it('wall goes on the nearest grid line in front of the player, wherever the crosshair lands', () => {
     const { world, builds } = flatWorld();
     const pos = new Vector3(2, 0, 2);
-    const t = targetFrom(world, builds, pos, 0, pitchFor(1.5), 'wall');
+    const t = targetFrom(world, builds, pos, 0, -0.1, 'wall');
     expect(t.piece).toBe('wall');
     expect(t.rotation).toBe(1);
     expect(t.grid).toEqual({ x: 0, y: 0, z: 0 });
-    // Aiming far away still builds on the closest line (like Fortnite).
-    expect(targetFrom(world, builds, pos, 0, pitchFor(1.5 + TILE * 2), 'wall').grid).toEqual({ x: 0, y: 0, z: 0 });
     // Looking +X builds on the cell's +X line; looking up puts it one level higher.
     expect(targetFrom(world, builds, pos, -Math.PI / 2, 0, 'wall').grid).toEqual({ x: 1, y: 0, z: 0 });
     expect(targetFrom(world, builds, pos, 0, 0.9, 'wall').grid).toEqual({ x: 0, y: 1, z: 0 });
     // Standing right on a line: the next line is used instead of building through the player.
-    expect(targetFrom(world, builds, new Vector3(2, 0, 0.2), 0, pitchFor(2), 'wall').grid).toEqual({ x: 0, y: 0, z: -1 });
+    expect(targetFrom(world, builds, new Vector3(2, 0, 0.2), 0, -0.1, 'wall').grid).toEqual({ x: 0, y: 0, z: -1 });
+    // Far from the line, looking down still builds on the nearest line.
+    expect(targetFrom(world, builds, new Vector3(2, 0, 4.6), 0, pitchFor(3), 'wall').grid).toEqual({ x: 0, y: 0, z: 0 });
+  });
+
+  it('high wall: within half a tile of the line and looking down > 15° skips to the far line', () => {
+    const { world, builds } = flatWorld();
+    const pos = new Vector3(2, 0, 2); // 2 m from line z = 0
+    expect(targetFrom(world, builds, pos, 0, -0.2, 'wall').grid).toEqual({ x: 0, y: 0, z: 0 }); // ~11° down
+    expect(targetFrom(world, builds, pos, 0, -0.4, 'wall').grid).toEqual({ x: 0, y: 0, z: -1 }); // ~23° down
   });
 
   it('preview and placement are identical: the placed piece occupies the previewed bounds', () => {
@@ -352,6 +359,53 @@ describe('destruction & support', () => {
     }
     expect(body.pos.z).toBeGreaterThan(1);
     expect(mid.phased).toBe(false);
+  });
+
+  it('dropping through an edited floor into a box lands inside the box, not on a wall top', () => {
+    const { world, builds, actor } = flatWorld();
+    Object.assign(actor.pos, { x: 60, y: 0, z: 60 });
+    // 1x1 box with a floor on top; the floor corner over the box corner is edited out.
+    builds.place(makeTarget('wall', { x: 0, y: 0, z: 0 }, 0), null);
+    builds.place(makeTarget('wall', { x: 1, y: 0, z: 0 }, 0), null);
+    builds.place(makeTarget('wall', { x: 0, y: 0, z: 0 }, 1), null);
+    builds.place(makeTarget('wall', { x: 0, y: 0, z: 1 }, 1), null);
+    const f = builds.place(makeTarget('floor', { x: 0, y: 1, z: 0 }, 0), null)!;
+    builds.applyEdit(f.id, null, 0b1110);
+    // Walk from the floor into the hole, toward the box corner.
+    for (const [vx, vz, sx, sz] of [[-4, 0, 3.4, 1.2], [0, -4, 1.2, 3.4], [-3, -3, 3.4, 3.4]]) {
+      const body = { pos: new Vector3(sx, TILE_H + 0.1, sz), vel: new Vector3(), radius: 0.32, height: 1.62, grounded: true };
+      for (let i = 0; i < 120; i++) {
+        body.vel.set(vx, body.vel.y - 24 / 60, vz);
+        moveCharacter(world, body, 1 / 60);
+      }
+      expect(body.pos.y).toBeLessThan(0.1);
+      for (const c of [body.pos.x, body.pos.z]) {
+        expect(c).toBeGreaterThan(0);
+        expect(c).toBeLessThan(TILE);
+      }
+    }
+  });
+
+  it('a ramp through a half-edited floor can be walked up and back down', () => {
+    const { world, builds, actor } = flatWorld();
+    Object.assign(actor.pos, { x: 60, y: 0, z: 60 });
+    builds.place(makeTarget('ramp', { x: 0, y: 0, z: -1 }, 0), null); // rises toward -Z
+    // Floor above the ramp; the half over the ramp's top end is edited away.
+    const f = builds.place(makeTarget('floor', { x: 0, y: 1, z: -1 }, 0), null)!;
+    builds.applyEdit(f.id, null, 0b1100);
+    builds.place(makeTarget('floor', { x: 0, y: 1, z: -2 }, 0), null); // landing at the top
+    const body = { pos: new Vector3(TILE / 2, 0, 0.8), vel: new Vector3(), radius: 0.32, height: 1.62, grounded: true };
+    const walk = (vz: number, frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        body.vel.set(0, body.vel.y - 24 / 60, vz);
+        moveCharacter(world, body, 1 / 60);
+      }
+    };
+    walk(-5, 90);
+    expect(body.pos.y).toBeGreaterThan(TILE_H - 0.2); // made it up through the hole
+    walk(5, 120);
+    expect(body.pos.z).toBeGreaterThan(0.3); // and back down to the bottom
+    expect(body.pos.y).toBeLessThan(0.2);
   });
 
   it('ramps are walkable', () => {

@@ -6,6 +6,7 @@ import type { GameEvents } from '../src/game/events';
 import { computeBuildTarget } from '../src/building/targeting';
 import type { BuildPieceType } from '../src/building/grid';
 import { dirFromYawPitch } from '../src/core/math';
+import { EYE_HEIGHT, PLAYER_HEIGHT, PLAYER_RADIUS } from '../src/core/constants';
 
 export function flatWorld() {
   const world = new CollisionWorld(null);
@@ -19,8 +20,8 @@ export function flatWorld() {
     materials: { wood: 999, stone: 999, metal: 999 },
     buildMaterial: 'wood',
     unlimitedMaterials: false,
-    radius: 0.38,
-    height: 1.8,
+    radius: PLAYER_RADIUS,
+    height: PLAYER_HEIGHT,
     alive: true,
   };
   bodies.push(actor);
@@ -29,7 +30,7 @@ export function flatWorld() {
 
 /** Build target as seen from a player standing at `pos` looking along yaw/pitch (first-person ray from the eye). */
 export function targetFrom(world: CollisionWorld, builds: BuildSystem, pos: Vector3, yaw: number, pitch: number, piece: BuildPieceType, userRotation = 0) {
-  const eye = new Vector3(pos.x, pos.y + 1.6, pos.z);
+  const eye = new Vector3(pos.x, pos.y + EYE_HEIGHT, pos.z);
   const dir = dirFromYawPitch(yaw, pitch, new Vector3());
   return computeBuildTarget(world, {
     origin: eye,
